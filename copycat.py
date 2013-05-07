@@ -111,7 +111,7 @@ def main(argv=None):
           if option in opt_args:
               creds[option] = value
         
-        if len(creds.items()) != 6:
+        if len(creds.items()) != len(OPT_ARGS):
             raise Usage(help_message) 
             
 
