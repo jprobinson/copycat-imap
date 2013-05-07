@@ -69,9 +69,9 @@ class CopyCat:
             self.to_conn.append('inbox','',self._get_date(message),raw_message[0][1])
             
             if cnt % 50 == 0:
-                print "moved %d emails" % (cnt)
+                log("moved %d emails" % (cnt))
         
-        print "COMPLETE! In the end, copycat barfed %d emails into the 'to' email address. Have a nice day" % (count)
+        log("COMPLETE! In the end, copycat barfed %d emails into the 'to' email address. Have a nice day" % (count))
         self.from_conn.close()
         self.to_conn.close()
 
