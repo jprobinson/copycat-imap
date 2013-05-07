@@ -11,7 +11,7 @@ import sys
 import getopt
 import imaplib
 import email
-from datetime import datetime,timedelta
+from datetime import datetime
 import time
 
 class CopyCat:
@@ -53,8 +53,6 @@ class CopyCat:
 
     def _get_date(self,message):
         date_string = message['Received'].split(';')[1].strip().split(',')[1].strip()[:-12]
-        # WHY ADD 3? BC ET ROCKS!!...eh...yeah whatever.
-        delta = timedelta(hours=3)
         return time.strptime(date_string,"%d %b %Y %H:%M:%S")
         
     def moveit(self):
@@ -68,10 +66,10 @@ class CopyCat:
             cnt = count+1
             typ, raw_message = self.from_conn.fetch(message_num,'(RFC822)')
             message = email.message_from_string(raw_message[0][1])
-            print self._get_date(message)
             self.to_conn.append('inbox','',self._get_date(message),raw_message[0][1])
-            if count % 100 == 0:
-                print "moved %d emails" % (count)
+            
+            if cnt % 50 == 0:
+                print "moved %d emails" % (cnt)
         
         print "COMPLETE! In the end, copycat barfed %d emails into the 'to' email address. Have a nice day" % (count)
         self.from_conn.close()
