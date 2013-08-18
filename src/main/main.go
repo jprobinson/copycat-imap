@@ -1,14 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"io/ioutil"
-	"encoding/json"
-	"sync"
 	"log"
 	"os"
+	"sync"
 
 	"copycat"
+	
+	"github.com/jprobinson/go-utils/utils"
 )
 
 func main() {
@@ -55,13 +57,14 @@ func main() {
 		var err error
 		srcInfo, err = copycat.NewInboxInfo(srcId, srcPw, srcHost)
 		errCheck(err, "Source Info")
-		
+
 		var dstInfo copycat.InboxInfo
 		dstInfo, err = copycat.NewInboxInfo(dstId, dstPw, dstHost)
 		errCheck(err, "Destination Info")
 		dstInfos = append(dstInfos, dstInfo)
 
 	} else {
+		//READ THE CONFIG FILE
 
 		cFile, err := os.Open(configFile)
 		errCheck(err, "Config File")
@@ -74,6 +77,22 @@ func main() {
 		err = json.Unmarshal(configBytes, &config)
 		errCheck(err, "Config File")
 
+		srcInfo = config.Source
+		err = srcInfo.Validate()
+		errCheck(err, "Source Creds")
+
+		dstInfos = config.Dest
+		for _, info := range dstInfos {
+			err = info.Validate()
+			errCheck(err, "Destination Creds")
+		}
+	}
+
+	// CHECK LOG FLAG & SETUP - create log utils in github...sorry NYT, they mine!
+	if len(logFile) > 0 {
+		logger := utils.DefaultLogSetup{LogFile:logFile}
+		logger.SetupLogging()
+		go utils.ListenForLogSignal(logger)
 	}
 
 	// start the work

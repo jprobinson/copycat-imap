@@ -2,32 +2,11 @@ package copycat
 
 import (
 	// "crypto/tls"
-	"github.com/sbinet/go-imap/go1/imap"
-
 	"sync"
+	"errors"
+	
+	"github.com/sbinet/go-imap/go1/imap"
 )
-
-type InboxInfo struct {
-	User string
-	Pw   string
-	Host string
-}
-
-func NewCopyCat(srcInfo InboxInfo, dstInfo InboxInfo, catNum int) (cat *CopyCat, err error) {
-	
-	// connect to imap!
-	
-	return
-}
-
-func NewInboxInfo(id string, pw string, host string) (info InboxInfo, err error) {
-	return 
-}
-
-type Config struct {
-	Source InboxInfo
-	Dest   []InboxInfo
-}
 
 // CopyCat represents a process waiting to copy
 type CopyCat struct {
@@ -37,12 +16,33 @@ type CopyCat struct {
 
 	dest *imap.Client
 	src  *imap.Client
+	
+	num int
+}
+
+func NewCopyCat(srcInfo InboxInfo, dstInfo InboxInfo, catNum int) (cat *CopyCat, err error) {
+
+	// connect to imap!
+
+	return
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
 func (c *CopyCat) Sync(wg *sync.WaitGroup) error {
 	defer wg.Done()
 	return Sync(c.src, c.dest)
+}
+
+func (c *CopyCat) SyncAndIdle(wg *sync.WaitGroup) (err error) {
+	defer wg.Done()
+
+	err = Sync(c.src, c.dest)
+	if err != nil {
+		return
+	}
+
+	// idle ... sync on any notification...only if we can make sync superfast.
+	return
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
@@ -54,6 +54,38 @@ func Sync(src *imap.Client, dst *imap.Client) (err error) {
 
 	err = syncPurge(src, dst)
 	return
+}
+
+type InboxInfo struct {
+	User string
+	Pw   string
+	Host string
+}
+
+func NewInboxInfo(id string, pw string, host string) (info InboxInfo, err error) {
+	info = InboxInfo{User: id, Pw: pw, Host: host}
+	return info, info.Validate()
+}
+
+func (i *InboxInfo) Validate() error {
+	if len(i.User) == 0 {
+		return errors.New("Login ID is required.")
+	}
+
+	if len(i.Pw) == 0 {
+		return errors.New("Login Password is required.")
+	}
+
+	if len(i.Host) == 0 {
+		return errors.New("IMAP Host is required.")
+	}
+
+	return nil
+}
+
+type Config struct {
+	Source InboxInfo
+	Dest   []InboxInfo
 }
 
 // syncAdd will add any files in src that do not exist in dst.
@@ -78,16 +110,4 @@ func syncPurge(src *imap.Client, dst *imap.Client) error {
 	// expunge at the end
 
 	return nil
-}
-
-func (c *CopyCat) SyncAndIdle(wg *sync.WaitGroup) (err error) {
-	defer wg.Done()
-	
-	err = Sync(c.src, c.dest)
-	if err != nil {
-		return
-	}
-
-	// idle ... sync on any notification...only if we can make sync superfast.
-	return
 }
