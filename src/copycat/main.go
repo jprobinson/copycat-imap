@@ -49,7 +49,7 @@ func main() {
 
 	// accept log file too
 	var logFile string
-	flag.StringVar(&logFile, "log", "stderr", "Location to write logs to. stderr by default. If set, a HUP signal will handle logrotate.")
+	flag.StringVar(&logFile, "log", "", "Location to write logs to. stderr by default. If set, a HUP signal will handle logrotate.")
 
 	flag.Parse()
 
@@ -106,8 +106,7 @@ func main() {
 	// start the work
 	var cats sync.WaitGroup
 	for catNum, dstInfo := range dstInfos {
-		cat, err := copycat.NewCopyCat(srcInfo, dstInfo, catNum)
-		errCheck(err, "IMAP Connection")
+		cat := &CopyCat{SourceInfo: srcInfo, DestInfo: dstInfo, num: catNum}
 		cats.Add(1)
 
 		if idle {
