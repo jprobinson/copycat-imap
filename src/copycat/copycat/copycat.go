@@ -1,7 +1,7 @@
 package copycat
 
 import (
-	// "crypto/tls"
+	"crypto/tls"
 	"sync"
 	"errors"
 	
@@ -10,19 +10,30 @@ import (
 
 // CopyCat represents a process waiting to copy
 type CopyCat struct {
-	// hold on in case of need for reconnect.
+	// hold on in case of need for reconnect
 	SourceInfo InboxInfo
 	DestInfo   InboxInfo
 
 	dest *imap.Client
 	src  *imap.Client
 	
+	// for logging purposes
 	num int
 }
 
+// NewCopyCat will create a new CopyCat instance initialize the IMAP connections.
 func NewCopyCat(srcInfo InboxInfo, dstInfo InboxInfo, catNum int) (cat *CopyCat, err error) {
-
-	// connect to imap!
+	cat = &CopyCat{SourceInfo: srcInfo, DestInfo: dstInfo, num: catNum}
+	
+	cat.src, err = getConnection(cat.SourceInfo)
+	if err != nil {
+		return
+	}
+	
+	cat.dest, err = getConnection(cat.DestInfo)
+	if err != nil {
+		return
+	}
 
 	return
 }
@@ -110,4 +121,24 @@ func syncPurge(src *imap.Client, dst *imap.Client) error {
 	// expunge at the end
 
 	return nil
+}
+
+func getConnection(info InboxInfo) (*imap.Client, error) {
+	conn, err := imap.DialTLS(info.Host, new(tls.Config))
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = conn.Login(info.User, info.Pw)
+	if err != nil {
+		return nil, err
+	}
+
+
+	_, err = imap.Wait(conn.Select("INBOX", false))
+	if err != nil {
+		return nil, err
+	}
+
+	return conn, nil
 }

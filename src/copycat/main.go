@@ -74,7 +74,6 @@ func main() {
 
 	} else {
 		//READ THE CONFIG FILE
-
 		cFile, err := os.Open(configFile)
 		errCheck(err, "Config File")
 
@@ -97,7 +96,7 @@ func main() {
 		}
 	}
 
-	// CHECK LOG FLAG & SETUP - create log utils in github...sorry NYT, they mine!
+	// check log flag, setup logger if set.
 	if len(logFile) > 0 {
 		logger := utils.DefaultLogSetup{LogFile: logFile}
 		logger.SetupLogging()
@@ -113,9 +112,7 @@ func main() {
 
 		if idle {
 			go cat.SyncAndIdle(&cats)
-
 		} else {
-
 			go cat.Sync(&cats)
 		}
 	}
