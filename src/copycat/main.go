@@ -3,13 +3,14 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 	"sync"
 
-	"copycat"
-	
+	"copycat/copycat"
+
 	"github.com/jprobinson/go-utils/utils"
 )
 
@@ -37,7 +38,10 @@ func main() {
 
 	// or multiple dest inbox by config file
 	var configFile string
-	flag.StringVar(&configFile, "config-file", "", "Location of a config file to pass in source and destination login information. Use --example-config to see the format.")
+	flag.StringVar(&configFile, "config-file", "", "Location of a config file to pass in source and destination login information. Use -example-config to see the format.")
+
+	var exampleConfig bool
+	flag.BoolVar(&exampleConfig, "example-config", false, "View an example layout for a json config file meant to hold multiple destination accounts.")
 
 	// single run or idle and wait
 	var idle bool
@@ -48,6 +52,11 @@ func main() {
 	flag.StringVar(&logFile, "log", "stderr", "Location to write logs to. stderr by default. If set, a HUP signal will handle logrotate.")
 
 	flag.Parse()
+
+	if exampleConfig {
+		fmt.Print(getExampleConfig())
+		return
+	}
 
 	var srcInfo copycat.InboxInfo
 	var dstInfos []copycat.InboxInfo
@@ -90,7 +99,7 @@ func main() {
 
 	// CHECK LOG FLAG & SETUP - create log utils in github...sorry NYT, they mine!
 	if len(logFile) > 0 {
-		logger := utils.DefaultLogSetup{LogFile:logFile}
+		logger := utils.DefaultLogSetup{LogFile: logFile}
 		logger.SetupLogging()
 		go utils.ListenForLogSignal(logger)
 	}
@@ -120,4 +129,30 @@ func errCheck(err error, msg string) {
 		log.Printf("Invalid %s: %s", msg, err.Error())
 		os.Exit(1)
 	}
+}
+
+func getExampleConfig() string {
+	return `
+	
+	{
+	    "source": {
+	        "user": "source_user_name",
+	        "pw": "source_pa$$w0rd",
+	        "host": "imap.source.com"
+	    },
+	    "dest": [
+	        {
+	            "user": "dest1_user_name",
+	            "pw": "dest1_pa$$w0rd",
+	            "host": "imap.dest1.com"
+	        },
+	        {
+	            "user": "dest2_user_name",
+	            "pw": "dest2_pa$$w0rd",
+	            "host": "imap.dest2.com"
+	        }
+	    ]
+	}
+	
+`
 }
