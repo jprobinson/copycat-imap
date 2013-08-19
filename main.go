@@ -9,7 +9,7 @@ import (
 	"os"
 	"sync"
 
-	"copycat/copycat"
+	"copycat-imap/copycat"
 
 	"github.com/jprobinson/go-utils/utils"
 )

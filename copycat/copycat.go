@@ -3,6 +3,8 @@ package copycat
 import (
 	"crypto/tls"
 	"errors"
+	"fmt"
+	"log"
 	"sync"
 
 	"github.com/sbinet/go-imap/go1/imap"
@@ -147,10 +149,10 @@ func checkAndPurge(src InboxInfo, dst InboxInfo, requests chan uint32, wg *sync.
 	srcConn, dstConn, err := getConnections(src, dst)
 	if err != nil {
 		log.Printf("Unable to connect - %s", err.Error())
-		return 
+		return
 	}
-	defer srcConn.Close()
-	defer dstConn.Close()
+	defer srcConn.Close(true)
+	defer dstConn.Close(true)
 
 	for requestUID := range requests {
 		// search for UID in src
@@ -167,26 +169,24 @@ func checkAndStore(src InboxInfo, dst InboxInfo, requests chan uint32, wg *sync.
 	srcConn, dstConn, err := getConnections(src, dst)
 	if err != nil {
 		log.Printf("Unable to connect - %s", err.Error())
-		return 
+		return
 	}
-	defer srcConn.Close()
-	defer dstConn.Close()
+	defer srcConn.Close(true)
+	defer dstConn.Close(true)
 
 	for requestUID := range requests {
 		uidSeq, err := imap.NewSeqSet(fmt.Sprintf("%d", requestUID))
 		if err != nil {
-			log.Printf("problems setting up uid search: %s",err.Error())
+			log.Printf("problems setting up uid search: %s", err.Error())
 			continue
 		}
-		
+
 		// search for UID in dst
-		cmd, err = imap.Wait(dstConn.UIDSearch(uidSeq))
+		cmd, err := imap.Wait(dstConn.UIDSearch(uidSeq))
 
 		// if not found, fetch from src and store in dest
 		if len(cmd.Data) == 0 {
-			
-			
-			
+
 		}
 
 	}
@@ -204,7 +204,7 @@ func getConnections(src InboxInfo, dst InboxInfo) (*imap.Client, *imap.Client, e
 	if err != nil {
 		return nil, nil, err
 	}
-	
+
 	return srcConn, dstConn, nil
 }
 
