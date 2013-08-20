@@ -1,4 +1,4 @@
-Copcat IMAP
+Copycat IMAP
 =============
 
 Copycat is a tool to sync two or more email inboxes. 
