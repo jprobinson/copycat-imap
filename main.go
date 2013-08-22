@@ -14,46 +14,33 @@ import (
 	"github.com/jprobinson/go-utils/utils"
 )
 
-func main() {
-
+var (
 	// cli accepts a host id/pw/host
-	var srcId string
-	flag.StringVar(&srcId, "src-id", "", "The login ID for the source mailbox.")
-
-	var srcPw string
-	flag.StringVar(&srcPw, "src-pw", "", "The login password for the source mailbox.")
-
-	var srcHost string
-	flag.StringVar(&srcHost, "src-host", "", "The imap host for the source mailbox.")
+	srcId   = flag.String("src-id", "", "The login ID for the source mailbox.")
+	srcPw   = flag.String("src-pw", "", "The login password for the source mailbox.")
+	srcHost = flag.String("src-host", "", "The imap host for the source mailbox.")
 
 	// and single dest id/pw/host
-	var dstId string
-	flag.StringVar(&dstId, "dst-id", "", "The login ID for the destincation mailbox.")
-
-	var dstPw string
-	flag.StringVar(&dstPw, "dst-pw", "", "The login password for the destincation mailbox.")
-
-	var dstHost string
-	flag.StringVar(&dstHost, "dst-host", "", "The imap host for the destincation mailbox.")
+	dstId   = flag.String("dst-id", "", "The login ID for the destincation mailbox.")
+	dstPw   = flag.String("dst-pw", "", "The login password for the destincation mailbox.")
+	dstHost = flag.String("dst-host", "", "The imap host for the destincation mailbox.")
 
 	// or multiple dest inbox by config file
-	var configFile string
-	flag.StringVar(&configFile, "config-file", "", "Location of a config file to pass in source and destination login information. Use -example-config to see the format.")
-
-	var exampleConfig bool
-	flag.BoolVar(&exampleConfig, "example-config", false, "View an example layout for a json config file meant to hold multiple destination accounts.")
+	configFile    = flag.String("config-file", "", "Location of a config file to pass in source and destination login information. Use -example-config to see the format.")
+	exampleConfig = flag.Bool("example-config", false, "View an example layout for a json config file meant to hold multiple destination accounts.")
 
 	// single run or idle and wait
-	var idle bool
-	flag.BoolVar(&idle, "idle", false, "Sync the mailboxes and then idle and wait for updates.")
+	idle = flag.Bool("idle", false, "Sync the mailboxes and then idle and wait for updates.")
 
 	// accept log file too
-	var logFile string
-	flag.StringVar(&logFile, "log", "", "Location to write logs to. stderr by default. If set, a HUP signal will handle logrotate.")
+	logFile = flag.String("log", "", "Location to write logs to. stderr by default. If set, a HUP signal will handle logrotate.")
+)
+
+func main() {
 
 	flag.Parse()
 
-	if exampleConfig {
+	if *exampleConfig {
 		fmt.Print(getExampleConfig())
 		return
 	}
@@ -61,20 +48,20 @@ func main() {
 	var srcInfo copycat.InboxInfo
 	var dstInfos []copycat.InboxInfo
 
-	if len(configFile) == 0 {
+	if len(*configFile) == 0 {
 		// put together info from input
 		var err error
-		srcInfo, err = copycat.NewInboxInfo(srcId, srcPw, srcHost)
+		srcInfo, err = copycat.NewInboxInfo(*srcId, *srcPw, *srcHost)
 		errCheck(err, "Source Info")
 
 		var dstInfo copycat.InboxInfo
-		dstInfo, err = copycat.NewInboxInfo(dstId, dstPw, dstHost)
+		dstInfo, err = copycat.NewInboxInfo(*dstId, *dstPw, *dstHost)
 		errCheck(err, "Destination Info")
 		dstInfos = append(dstInfos, dstInfo)
 
 	} else {
 		//READ THE CONFIG FILE
-		cFile, err := os.Open(configFile)
+		cFile, err := os.Open(*configFile)
 		errCheck(err, "Config File")
 
 		configBytes, err := ioutil.ReadAll(cFile)
@@ -97,8 +84,8 @@ func main() {
 	}
 
 	// check log flag, setup logger if set.
-	if len(logFile) > 0 {
-		logger := utils.DefaultLogSetup{LogFile: logFile}
+	if len(*logFile) > 0 {
+		logger := utils.DefaultLogSetup{LogFile: *logFile}
 		logger.SetupLogging()
 		go utils.ListenForLogSignal(logger)
 	}
@@ -106,10 +93,10 @@ func main() {
 	// start the work
 	var cats sync.WaitGroup
 	for catNum, dstInfo := range dstInfos {
-		cat := &CopyCat{SourceInfo: srcInfo, DestInfo: dstInfo, num: catNum}
+		cat := &copycat.CopyCat{SourceInfo: srcInfo, DestInfo: dstInfo, Num: catNum}
 		cats.Add(1)
 
-		if idle {
+		if *idle {
 			go cat.SyncAndIdle(&cats)
 		} else {
 			go cat.Sync(&cats)

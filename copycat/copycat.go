@@ -17,7 +17,7 @@ type CopyCat struct {
 	DestInfo   InboxInfo
 
 	// for logging purposes
-	num int
+	Num int
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
@@ -156,6 +156,7 @@ func checkAndPurge(src InboxInfo, dst InboxInfo, requests chan uint32, wg *sync.
 
 	for requestUID := range requests {
 		// search for UID in src
+		fmt.Print(requestUID,"\n")
 
 		// if not found, set uid to /Deleted in dst
 	}
