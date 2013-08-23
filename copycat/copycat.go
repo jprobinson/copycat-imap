@@ -6,8 +6,8 @@ import (
 	"errors"
 	"log"
 	"net/mail"
-	"sync"
 	"time"
+	"sync"
 
 	"code.google.com/p/go-imap/go1/imap"
 )
@@ -51,7 +51,8 @@ func Sync(src InboxInfo, dst InboxInfo) (err error) {
 		log.Print("ERROR: ", err.Error())
 		return
 	}
-
+	dur, _ := time.ParseDuration("5s")
+	time.Sleep(dur)
 	err = doWork(src, dst, false)
 	return
 }
@@ -104,11 +105,13 @@ func doWork(src InboxInfo, dst InboxInfo, purge bool) error {
 
 	var info InboxInfo
 	if purge {
+		log.Printf("pulling from dst")
 		info = dst
 	} else {
+		log.Printf("pulling from src")
 		info = src
 	}
-
+	
 	conn, err := getConnection(info, false)
 	if err != nil {
 		return err
@@ -118,7 +121,7 @@ func doWork(src InboxInfo, dst InboxInfo, purge bool) error {
 	requests := make(chan workRequest)
 	var wg sync.WaitGroup
 	// TODO: figure out an approp # of workers
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 5; i++ {
 		wg.Add(1)
 
 		if purge {
@@ -146,22 +149,21 @@ func doWork(src InboxInfo, dst InboxInfo, purge bool) error {
 		}
 	}
 
-	log.Printf("done workin! ...waitin ")
-
 	// after everything is on the channel, close it...
 	close(requests)
 	// ... and wait for our workers to finish up.
 	wg.Wait()
 
-	log.Printf("done waitin!")
+	log.Printf("work complete")
 
 	if purge {
+		log.Printf("expunging...")
 		// expunge at the end
 		_, err := imap.Wait(conn.Expunge(allMsgs))
 		if err != nil {
 			return err
 		}
-
+		log.Printf("expunge complete.")
 	}
 
 	return nil
@@ -180,6 +182,8 @@ func checkAndPurge(src InboxInfo, dst InboxInfo, requests chan workRequest, wg *
 	defer dstConn.Close(true)
 
 	for request := range requests {
+
+		log.Printf("checking of %s exists in src", request.Value)
 		// search for in src
 		cmd, err := imap.Wait(srcConn.UIDSearch([]imap.Field{"HEADER", request.Header, request.Value}))
 		if err != nil {
@@ -191,7 +195,7 @@ func checkAndPurge(src InboxInfo, dst InboxInfo, requests chan workRequest, wg *
 		// if not found, mark for deletion in DST
 		if len(results) == 0 {
 			//not found! lets mark this bia for deletion
-			log.Printf("notfound: %s", results)
+			log.Printf("not found in src. marking for deletion: %s", request.UID)
 			seqSet, _ := imap.NewSeqSet("")
 			seqSet.AddNum(request.UID)
 			_, err := dstConn.UIDStore(seqSet, "+FLAGS", imap.NewFlagSet(`\Deleted`))
@@ -201,11 +205,11 @@ func checkAndPurge(src InboxInfo, dst InboxInfo, requests chan workRequest, wg *
 			}
 
 		} else {
-			log.Printf("Message EXISTS!: %d", results)
+			log.Printf("Message exists in src. leaving it be: %d", results)
 		}
 
 	}
-
+	log.Print("purger complete!")
 	return
 }
 
@@ -221,6 +225,7 @@ func checkAndStore(src InboxInfo, dst InboxInfo, requests chan workRequest, wg *
 	defer dstConn.Close(true)
 
 	for request := range requests {
+		log.Printf("checking if %s exists in dst", request.Value)
 		// search for in dst
 		cmd, err := imap.Wait(dstConn.UIDSearch([]imap.Field{"HEADER", request.Header, request.Value}))
 		if err != nil {
@@ -231,9 +236,10 @@ func checkAndStore(src InboxInfo, dst InboxInfo, requests chan workRequest, wg *
 		results := cmd.Data[0].SearchResults()
 		// if not found, PULL from SRC and STORE in DST
 		if len(results) == 0 {
+			log.Printf("pulling %d from src", request.UID)
 			srcSeq, _ := imap.NewSeqSet("")
 			srcSeq.AddNum(request.UID)
-			cmd, err := imap.Wait(srcConn.UIDFetch(srcSeq, "FLAGS", "INTERNALDATE", "BODY[]", "HEADER"))
+			cmd, err := imap.Wait(srcConn.UIDFetch(srcSeq, "FLAGS", "INTERNALDATE", "BODY[]"))
 			if err != nil {
 				log.Printf("unable to fetch from src: %s", err.Error())
 				continue
@@ -243,14 +249,12 @@ func checkAndStore(src InboxInfo, dst InboxInfo, requests chan workRequest, wg *
 				log.Printf("unable to fetch from src: NO DATA")
 				continue
 			}
-
+			
 			msg := cmd.Data[0].MessageInfo()
-			log.Printf("DATES! %s", imap.AsString(msg.Attrs["Date"]))
-			log.Printf("AAADA! %s", imap.AsList(msg.Attrs["Date"]))
-			msgDate, err := time.Parse(dateFlagFormat, imap.AsString(msg.Attrs["Date"]))
 			if err != nil {
 				log.Printf("cant parse date?! %s", err.Error())
 			}
+			msgDate := imap.AsDateTime(msg.Attrs["INTERNALDATE"])
 			_, err = imap.Wait(dstConn.Append("INBOX", imap.NewFlagSet("UnSeen"), &msgDate, imap.NewLiteral(imap.AsBytes(msg.Attrs["BODY[]"]))))
 			if err != nil {
 				log.Printf("Problems removing message from dst: %s", err.Error())
@@ -258,11 +262,11 @@ func checkAndStore(src InboxInfo, dst InboxInfo, requests chan workRequest, wg *
 			}
 
 		} else {
-			log.Printf("Message EXISTS!: %d", results)
+			log.Printf("Message exists in dst. leave it be: %d", results)
 		}
 
 	}
-
+	log.Print("storer complete!")
 	return
 }
 
