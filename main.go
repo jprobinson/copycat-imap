@@ -7,7 +7,6 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"sync"
 
 	"copycat-imap/copycat"
 
@@ -90,21 +89,12 @@ func main() {
 		go utils.ListenForLogSignal(logger)
 	}
 
-	// start the work
-	var cats sync.WaitGroup
-	for catNum, dstInfo := range dstInfos {
-		cat := &copycat.CopyCat{SourceInfo: srcInfo, DestInfo: dstInfo, Num: catNum}
-		cats.Add(1)
-
-		if *idle {
-			go cat.SyncAndIdle(&cats)
-		} else {
-			go cat.Sync(&cats)
-		}
+	cat := &copycat.CopyCat{SourceInfo: srcInfo, DestInfos: dstInfos}
+	if *idle {
+		cat.SyncAndIdle()
+	} else {
+		cat.Sync()
 	}
-
-	cats.Wait()
-
 }
 
 func errCheck(err error, msg string) {

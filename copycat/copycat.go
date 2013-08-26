@@ -1,42 +1,36 @@
 package copycat
 
 import (
-	"bytes"
 	"crypto/tls"
 	"errors"
 	"log"
-	"net/mail"
-	"time"
-	"sync"
 
 	"code.google.com/p/go-imap/go1/imap"
 )
 
 const (
-	dateFlagFormat = "Mon, 02 Jan 2006 15:04:05 -0700"
+	// TODO: figure out an approp # of conns (GMail allows 15 concurrent IMAP conns)
+	MaxImapConns = 5
+
+	MemcacheServer = "localhost:11211"
 )
 
 // CopyCat represents a process waiting to copy
 type CopyCat struct {
 	// hold on in case of need for reconnect
 	SourceInfo InboxInfo
-	DestInfo   InboxInfo
-
-	// for logging purposes
-	Num int
+	DestInfos  []InboxInfo
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
-func (c *CopyCat) Sync(wg *sync.WaitGroup) error {
-	defer wg.Done()
-	return Sync(c.SourceInfo, c.DestInfo)
+func (c *CopyCat) Sync() error {
+	return Sync(c.SourceInfo, c.DestInfos)
 }
 
-func (c *CopyCat) SyncAndIdle(wg *sync.WaitGroup) (err error) {
-	defer wg.Done()
-
-	err = Sync(c.SourceInfo, c.DestInfo)
+func (c *CopyCat) SyncAndIdle() (err error) {
+	err = Sync(c.SourceInfo, c.DestInfos)
 	if err != nil {
+		log.Print("SYNC ERROR: ", err.Error())
 		return
 	}
 
@@ -45,15 +39,13 @@ func (c *CopyCat) SyncAndIdle(wg *sync.WaitGroup) (err error) {
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
-func Sync(src InboxInfo, dst InboxInfo) (err error) {
-	err = doWork(src, dst, true)
+func Sync(src InboxInfo, dsts []InboxInfo) (err error) {
+	err = SearchAndPurge(src, dsts)
 	if err != nil {
-		log.Print("ERROR: ", err.Error())
 		return
 	}
-	dur, _ := time.ParseDuration("5s")
-	time.Sleep(dur)
-	err = doWork(src, dst, false)
+
+	err = SearchAndStore(src, dsts)
 	return
 }
 
@@ -89,202 +81,26 @@ func (i *InboxInfo) Validate() error {
 	return nil
 }
 
-type workRequest struct {
-	Value  string
-	Header string
-	UID    uint32
-}
+func GetAllMessages(info InboxInfo) (*imap.Command, error) {
+	// connect to source mailbox
+	conn, err := GetConnection(info, false)
+	if err != nil {
+		return &imap.Command{}, err
+	}
+	defer conn.Close(false)
 
-// doWork kicks off the processes that do part of the work to sync
-// 2 inboxes. If purge is true, messages that exist in dst but not
-// src will be removed. If purge is false, message that exist in src
-// but not dst will be stored in dst.
-func doWork(src InboxInfo, dst InboxInfo, purge bool) error {
+	// get headers and UID for ALL message in src inbox...
 	allMsgs, _ := imap.NewSeqSet("")
 	allMsgs.Add("1:*")
-
-	var info InboxInfo
-	if purge {
-		log.Printf("pulling from dst")
-		info = dst
-	} else {
-		log.Printf("pulling from src")
-		info = src
-	}
-	
-	conn, err := getConnection(info, false)
-	if err != nil {
-		return err
-	}
-
-	// setup workers
-	requests := make(chan workRequest)
-	var wg sync.WaitGroup
-	// TODO: figure out an approp # of workers
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-
-		if purge {
-			go checkAndPurge(src, dst, requests, &wg)
-		} else {
-			go checkAndStore(src, dst, requests, &wg)
-		}
-
-	}
-
-	// get ALL HEADERS from inbox...
 	cmd, err := imap.Wait(conn.Fetch(allMsgs, "RFC822.HEADER", "UID"))
 	if err != nil {
-		return err
+		return &imap.Command{}, err
 	}
 
-	// Process command data
-	var rsp *imap.Response
-	for _, rsp = range cmd.Data {
-		header := imap.AsBytes(rsp.MessageInfo().Attrs["RFC822.HEADER"])
-		if msg, _ := mail.ReadMessage(bytes.NewReader(header)); msg != nil {
-			header := "Message-Id"
-			value := msg.Header.Get(header)
-			requests <- workRequest{Value: value, Header: header, UID: rsp.MessageInfo().UID}
-		}
-	}
-
-	// after everything is on the channel, close it...
-	close(requests)
-	// ... and wait for our workers to finish up.
-	wg.Wait()
-
-	log.Printf("work complete")
-
-	if purge {
-		log.Printf("expunging...")
-		// expunge at the end
-		_, err := imap.Wait(conn.Expunge(allMsgs))
-		if err != nil {
-			return err
-		}
-		log.Printf("expunge complete.")
-	}
-
-	return nil
+	return cmd, nil
 }
 
-// checkAndPurge will pull message message ids off of requests and do some work
-func checkAndPurge(src InboxInfo, dst InboxInfo, requests chan workRequest, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	srcConn, dstConn, err := getConnections(src, true, dst, false)
-	if err != nil {
-		log.Printf("Unable to connect - %s", err.Error())
-		return
-	}
-	defer srcConn.Close(false)
-	defer dstConn.Close(true)
-
-	for request := range requests {
-
-		log.Printf("checking of %s exists in src", request.Value)
-		// search for in src
-		cmd, err := imap.Wait(srcConn.UIDSearch([]imap.Field{"HEADER", request.Header, request.Value}))
-		if err != nil {
-			log.Printf("searchfail: %s", err.Error())
-			return
-		}
-
-		results := cmd.Data[0].SearchResults()
-		// if not found, mark for deletion in DST
-		if len(results) == 0 {
-			//not found! lets mark this bia for deletion
-			log.Printf("not found in src. marking for deletion: %s", request.UID)
-			seqSet, _ := imap.NewSeqSet("")
-			seqSet.AddNum(request.UID)
-			_, err := dstConn.UIDStore(seqSet, "+FLAGS", imap.NewFlagSet(`\Deleted`))
-			if err != nil {
-				log.Printf("Problems removing message from dst: %s", err.Error())
-				continue
-			}
-
-		} else {
-			log.Printf("Message exists in src. leaving it be: %d", results)
-		}
-
-	}
-	log.Print("purger complete!")
-	return
-}
-
-func checkAndStore(src InboxInfo, dst InboxInfo, requests chan workRequest, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	srcConn, dstConn, err := getConnections(src, false, dst, true)
-	if err != nil {
-		log.Printf("Unable to connect - %s", err.Error())
-		return
-	}
-	defer srcConn.Close(false)
-	defer dstConn.Close(true)
-
-	for request := range requests {
-		log.Printf("checking if %s exists in dst", request.Value)
-		// search for in dst
-		cmd, err := imap.Wait(dstConn.UIDSearch([]imap.Field{"HEADER", request.Header, request.Value}))
-		if err != nil {
-			log.Printf("searchfail: %s", err.Error())
-			return
-		}
-
-		results := cmd.Data[0].SearchResults()
-		// if not found, PULL from SRC and STORE in DST
-		if len(results) == 0 {
-			log.Printf("pulling %d from src", request.UID)
-			srcSeq, _ := imap.NewSeqSet("")
-			srcSeq.AddNum(request.UID)
-			cmd, err := imap.Wait(srcConn.UIDFetch(srcSeq, "FLAGS", "INTERNALDATE", "BODY[]"))
-			if err != nil {
-				log.Printf("unable to fetch from src: %s", err.Error())
-				continue
-			}
-
-			if len(cmd.Data) == 0 {
-				log.Printf("unable to fetch from src: NO DATA")
-				continue
-			}
-			
-			msg := cmd.Data[0].MessageInfo()
-			if err != nil {
-				log.Printf("cant parse date?! %s", err.Error())
-			}
-			msgDate := imap.AsDateTime(msg.Attrs["INTERNALDATE"])
-			_, err = imap.Wait(dstConn.Append("INBOX", imap.NewFlagSet("UnSeen"), &msgDate, imap.NewLiteral(imap.AsBytes(msg.Attrs["BODY[]"]))))
-			if err != nil {
-				log.Printf("Problems removing message from dst: %s", err.Error())
-				continue
-			}
-
-		} else {
-			log.Printf("Message exists in dst. leave it be: %d", results)
-		}
-
-	}
-	log.Print("storer complete!")
-	return
-}
-
-func getConnections(src InboxInfo, srcReadOnly bool, dst InboxInfo, dstReadOnly bool) (*imap.Client, *imap.Client, error) {
-	srcConn, err := getConnection(src, srcReadOnly)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	dstConn, err := getConnection(dst, dstReadOnly)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return srcConn, dstConn, nil
-}
-
-func getConnection(info InboxInfo, readOnly bool) (*imap.Client, error) {
+func GetConnection(info InboxInfo, readOnly bool) (*imap.Client, error) {
 	conn, err := imap.DialTLS(info.Host, new(tls.Config))
 	if err != nil {
 		return nil, err
@@ -301,4 +117,10 @@ func getConnection(info InboxInfo, readOnly bool) (*imap.Client, error) {
 	}
 
 	return conn, nil
+}
+
+type WorkRequest struct {
+	Value  string
+	Header string
+	UID    uint32
 }
