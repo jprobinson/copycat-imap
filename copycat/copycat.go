@@ -10,25 +10,58 @@ import (
 
 const (
 	// TODO: figure out an approp # of conns (GMail allows 15 concurrent IMAP conns)
-	MaxImapConns = 5
-
+	MaxImapConns   = 10
 	MemcacheServer = "localhost:11211"
 )
+
+func NewCopyCat(src InboxInfo, dsts []InboxInfo) (*CopyCat, error) {
+	cat := &CopyCat{SourceInfo: src, DestInfos: dsts}
+	cat.DestConns = make(map[string][]*imap.Client)
+	for i := 0; i < MaxImapConns; i++ {
+
+		sourceConn, err := GetConnection(src, true)
+		if err != nil {
+			log.Printf("Unable to connect to %s: %s", src.User, err.Error())
+			return cat, err
+		}
+		cat.SourceConns = append(cat.SourceConns, sourceConn)
+
+
+		for _, dst := range dsts {
+			dstConn, err := GetConnection(dst, false)
+			if err != nil {
+				log.Printf("Unable to connect to %s: %s", src.User, err.Error())
+				return cat, err
+			}
+			if _, exists := cat.DestConns[dst.User]; exists {
+				cat.DestConns[dst.User] = append(cat.DestConns[dst.User], dstConn)
+			} else {
+				cat.DestConns[dst.User] = []*imap.Client{dstConn}
+			}
+
+		}
+	}
+
+	return cat, nil
+}
 
 // CopyCat represents a process waiting to copy
 type CopyCat struct {
 	// hold on in case of need for reconnect
 	SourceInfo InboxInfo
 	DestInfos  []InboxInfo
+
+	SourceConns []*imap.Client
+	DestConns   map[string][]*imap.Client
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
 func (c *CopyCat) Sync() error {
-	return Sync(c.SourceInfo, c.DestInfos)
+	return Sync(c.SourceConns, c.DestConns)
 }
 
 func (c *CopyCat) SyncAndIdle() (err error) {
-	err = Sync(c.SourceInfo, c.DestInfos)
+	err = Sync(c.SourceConns, c.DestConns)
 	if err != nil {
 		log.Print("SYNC ERROR: ", err.Error())
 		return
@@ -39,7 +72,7 @@ func (c *CopyCat) SyncAndIdle() (err error) {
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
-func Sync(src InboxInfo, dsts []InboxInfo) (err error) {
+func Sync(src []*imap.Client, dsts map[string][]*imap.Client) (err error) {
 	err = SearchAndPurge(src, dsts)
 	if err != nil {
 		return
@@ -81,14 +114,7 @@ func (i *InboxInfo) Validate() error {
 	return nil
 }
 
-func GetAllMessages(info InboxInfo) (*imap.Command, error) {
-	// connect to source mailbox
-	conn, err := GetConnection(info, false)
-	if err != nil {
-		return &imap.Command{}, err
-	}
-	defer conn.Close(false)
-
+func GetAllMessages(conn *imap.Client) (*imap.Command, error) {
 	// get headers and UID for ALL message in src inbox...
 	allMsgs, _ := imap.NewSeqSet("")
 	allMsgs.Add("1:*")

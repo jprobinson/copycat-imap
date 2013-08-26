@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/mail"
 	"sync"
+	"time"
 
 	"code.google.com/p/go-imap/go1/imap"
 	"github.com/bradfitz/gomemcache/memcache"
@@ -14,9 +15,9 @@ import (
 // searchAndStore will check check if each message in the source inbox
 // exists in the destinations. If it doesn't exist in a destination, the message info will
 // be pulled and stored into the destination.
-func SearchAndStore(src InboxInfo, dsts []InboxInfo) (err error) {
+func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err error) {
 	var cmd *imap.Command
-	cmd, err = GetAllMessages(src)
+	cmd, err = GetAllMessages(src[0])
 	if err != nil {
 		log.Printf("Unable to get all messages!")
 		return
@@ -25,9 +26,9 @@ func SearchAndStore(src InboxInfo, dsts []InboxInfo) (err error) {
 	// setup message fetchers to pull from the source/memcache
 	var fetchers sync.WaitGroup
 	fetchRequests := make(chan fetchRequest)
-	for j := 0; j < MaxImapConns; j++ {
+	for _, srcConn := range src {
 		fetchers.Add(1)
-		go fetchEmails(src, fetchRequests, &fetchers)
+		go fetchEmails(srcConn, fetchRequests, &fetchers)
 	}
 
 	// setup storers for each destination
@@ -35,17 +36,19 @@ func SearchAndStore(src InboxInfo, dsts []InboxInfo) (err error) {
 	var dstsStoreRequests []chan WorkRequest
 	for _, dst := range dsts {
 		storeRequests := make(chan WorkRequest)
-		for i := 0; i < MaxImapConns; i++ {
+		for _, dstConn := range dst {
 			storers.Add(1)
-			go checkAndStoreMessages(dst, storeRequests, fetchRequests, &storers)
+			go checkAndStoreMessages(dstConn, storeRequests, fetchRequests, &storers)
 		}
 
 		dstsStoreRequests = append(dstsStoreRequests, storeRequests)
 	}
 
 	// build the requests and send them
+	log.Printf("Beginning store processing for %d messages from the source inbox", len(cmd.Data))
 	var rsp *imap.Response
-	for _, rsp = range cmd.Data {
+	var indx int
+	for indx, rsp = range cmd.Data {
 		header := imap.AsBytes(rsp.MessageInfo().Attrs["RFC822.HEADER"])
 		if msg, _ := mail.ReadMessage(bytes.NewReader(header)); msg != nil {
 			header := "Message-Id"
@@ -55,6 +58,10 @@ func SearchAndStore(src InboxInfo, dsts []InboxInfo) (err error) {
 			storeRequest := WorkRequest{Value: value, Header: header, UID: rsp.MessageInfo().UID}
 			for _, storeRequests := range dstsStoreRequests {
 				storeRequests <- storeRequest
+			}
+
+			if (indx % 200) == 0 {
+				log.Printf("Completed store processing for %d messages from the source inbox", indx)
 			}
 		}
 	}
@@ -75,15 +82,8 @@ func SearchAndStore(src InboxInfo, dsts []InboxInfo) (err error) {
 	return nil
 }
 
-func checkAndStoreMessages(dst InboxInfo, storeRequests chan WorkRequest, fetchRequests chan fetchRequest, wg *sync.WaitGroup) {
+func checkAndStoreMessages(dstConn *imap.Client, storeRequests chan WorkRequest, fetchRequests chan fetchRequest, wg *sync.WaitGroup) {
 	defer wg.Done()
-
-	dstConn, err := GetConnection(dst, false)
-	if err != nil {
-		log.Printf("Unable to connect to destination: %s", err.Error())
-		return
-	}
-	defer dstConn.Close(true)
 
 	for request := range storeRequests {
 		log.Printf("checking and storing (%s)", request.Value)
@@ -100,21 +100,20 @@ func checkAndStoreMessages(dst InboxInfo, storeRequests chan WorkRequest, fetchR
 		if len(results) == 0 {
 
 			// build and send fetch request
-			response := make(chan imap.FieldMap)
+			response := make(chan messageData)
 			fr := fetchRequest{MessageId: request.Value, UID: request.UID, Response: response}
 			fetchRequests <- fr
 
 			// grab response from fetchers
-			attrs := <-response
-			if len(attrs) == 0 {
+			messageData := <-response
+			if len(messageData.Body) == 0 {
 				log.Printf("No data found in message fetch request (%s)", request.Value)
 				continue
 			}
 
-			msgDate := imap.AsDateTime(attrs["INTERNALDATE"])
-			_, err = imap.Wait(dstConn.Append("INBOX", imap.NewFlagSet("UnSeen"), &msgDate, imap.NewLiteral(imap.AsBytes(attrs["BODY[]"]))))
+			_, err = imap.Wait(dstConn.Append("INBOX", imap.NewFlagSet("UnSeen"), &messageData.InternalDate, imap.NewLiteral(messageData.Body)))
 			if err != nil {
-				log.Printf("Problems removing message from dst: %s", err.Error())
+				log.Printf("Problems appending message to dst: %s", err.Error())
 				continue
 			}
 
@@ -127,37 +126,35 @@ func checkAndStoreMessages(dst InboxInfo, storeRequests chan WorkRequest, fetchR
 type fetchRequest struct {
 	MessageId string
 	UID       uint32
-	Response  chan imap.FieldMap
+	Response  chan messageData
+}
+
+type messageData struct {
+	InternalDate time.Time
+	Body         []byte
 }
 
 // fetchEmails will sit and wait for fetchRequests from the destination workers. Once the
 // requests channel is closed, this will finish up work and notify the waitgroup it is done.
-func fetchEmails(src InboxInfo, requests chan fetchRequest, wg *sync.WaitGroup) {
+func fetchEmails(conn *imap.Client, requests chan fetchRequest, wg *sync.WaitGroup) {
 	defer wg.Done()
-
-	//connect to src imap
-	conn, err := GetConnection(src, true)
-	if err != nil {
-		log.Printf("Unable to connect to source inbox: %s", err.Error())
-		return
-	}
 	// connect to memcached
 	cache := memcache.New(MemcacheServer)
 
 	for request := range requests {
 		// check if the message body is in memcached
-		if msgBytes, err := cache.Get(request.MessageId); err != nil {
-
-			var msgFields imap.FieldMap
-			err := deserialize(msgBytes.Value, &msgFields)
+		log.Printf("looking for %s in cache", request.MessageId)
+		if msgBytes, err := cache.Get(request.MessageId); err == nil {
+			var data messageData
+			err := deserialize(msgBytes.Value, &data)
 			if err != nil {
 				log.Printf("Problems deserializing memcache value: %s. Pulling message from src", err.Error())
-				msgFields = imap.FieldMap{}
+				data = messageData{}
 			}
 
 			// if its there, respond with it
-			if len(msgFields) > 0 {
-				request.Response <- msgFields
+			if len(data.Body) > 0 {
+				request.Response <- data
 				continue
 			}
 		}
@@ -177,11 +174,12 @@ func fetchEmails(src InboxInfo, requests chan fetchRequest, wg *sync.WaitGroup) 
 		}
 
 		msgFields := cmd.Data[0].MessageInfo().Attrs
-		request.Response <- msgFields
+		msgData := messageData{InternalDate: imap.AsDateTime(msgFields["INTERNALDATE"]), Body: imap.AsBytes(msgFields["BODY[]"])}
+		request.Response <- msgData
 
 		// store it in memcached if we had to fetch it
 		// gobify
-		msgGob, err := serialize(msgFields)
+		msgGob, err := serialize(msgData)
 		if err != nil {
 			log.Printf("Unable to serialize message (%s): %s", request.MessageId, err.Error())
 			continue

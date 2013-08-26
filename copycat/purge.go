@@ -1,35 +1,34 @@
 package copycat
 
 import (
-	"log"
-	"sync"
 	"bytes"
+	"log"
 	"net/mail"
+	"sync"
 
-	"github.com/bradfitz/gomemcache/memcache"
 	"code.google.com/p/go-imap/go1/imap"
+	"github.com/bradfitz/gomemcache/memcache"
 )
 
 // searchAndPurge will go through the destination inboxes and check if
 // each message exists in the source inbox. If a message does not exist
 // in the source, delete it from the destination.
-func SearchAndPurge(src InboxInfo, dsts []InboxInfo) error {
+func SearchAndPurge(src []*imap.Client, dsts map[string][]*imap.Client) error {
 
 	// setup pool of 'checkers' to see if messages
 	// exist in the source mailbox
 	checkRequests := make(chan checkExistsRequest)
 	var checkers sync.WaitGroup
-	for j := 0; j < MaxImapConns; j++ {
+	for _, srcConn := range src {
 		checkers.Add(1)
-		go checkMessagesExist(src, checkRequests, &checkers)
+		go checkMessagesExist(srcConn, checkRequests, &checkers)
 	}
 
 	// setup pool of 'purgers' for each destination
 	var purgers sync.WaitGroup
-	for _, dst := range dsts {
+	for user, dst := range dsts {
 		purgers.Add(1)
-		log.Printf("purge for %s", dst.User)
-		go purgeDestination(dst, checkRequests, &purgers)
+		go purgeDestination(user, dst, checkRequests, &purgers)
 	}
 
 	// wait for the purgers to complete
@@ -44,10 +43,10 @@ func SearchAndPurge(src InboxInfo, dsts []InboxInfo) error {
 }
 
 // checkAndPurge will pull message message ids off of requests and do some work
-func purgeDestination(dst InboxInfo, checkRequests chan checkExistsRequest, wg *sync.WaitGroup) {
+func purgeDestination(user string, dsts []*imap.Client, checkRequests chan checkExistsRequest, wg *sync.WaitGroup) {
 	defer wg.Done()
-	
-	cmd, err := GetAllMessages(dst)
+
+	cmd, err := GetAllMessages(dsts[0])
 	if err != nil {
 		log.Printf("Unable to find destination messages: %s", err.Error())
 	}
@@ -56,15 +55,15 @@ func purgeDestination(dst InboxInfo, checkRequests chan checkExistsRequest, wg *
 
 	// launch purgers
 	var purgers sync.WaitGroup
-	for i := 0; i < MaxImapConns; i++ {
+	for _, dstConn := range dsts {
 		purgers.Add(1)
-		go checkAndPurgeMessages(dst, workRequests, checkRequests, &purgers)
+		go checkAndPurgeMessages(dstConn, workRequests, checkRequests, &purgers)
 	}
-	
+
 	// build the requests and send them
 	var rsp *imap.Response
 	var indx int
-	log.Printf("Beginning check/purge for %s with %d messages", dst.User, len(cmd.Data))
+	log.Printf("Beginning check/purge for %s with %d messages", user, len(cmd.Data))
 	for indx, rsp = range cmd.Data {
 		header := imap.AsBytes(rsp.MessageInfo().Attrs["RFC822.HEADER"])
 		if msg, _ := mail.ReadMessage(bytes.NewReader(header)); msg != nil {
@@ -73,26 +72,21 @@ func purgeDestination(dst InboxInfo, checkRequests chan checkExistsRequest, wg *
 
 			// create the store request and pass it to each dst's storers
 			workRequests <- WorkRequest{Value: value, Header: header, UID: rsp.MessageInfo().UID}
-			
-			if (indx % 100) == 0 {
-				log.Printf("Processed %d messages from %s", indx, dst.User)
+
+			if (indx % 200) == 0 {
+				log.Printf("Processed %d messages from %s", indx, user)
 			}
 		}
 	}
+	
+	close(workRequests)
+	purgers.Wait()
 
-	log.Print("purger complete!")
 	return
 }
 
-func checkAndPurgeMessages(dst InboxInfo, requests chan WorkRequest, checkRequests chan checkExistsRequest, wg *sync.WaitGroup) {
+func checkAndPurgeMessages(conn *imap.Client, requests chan WorkRequest, checkRequests chan checkExistsRequest, wg *sync.WaitGroup) {
 	defer wg.Done()
-
-	conn, err := GetConnection(dst, false)
-	if err != nil {
-		log.Print("Problems connecting to destination: %s", err.Error())
-		return
-	}
-	defer conn.Close(true)
 
 	for request := range requests {
 		// check and wait for response
@@ -111,6 +105,12 @@ func checkAndPurgeMessages(dst InboxInfo, requests chan WorkRequest, checkReques
 			}
 		}
 	}
+	log.Printf("expunging...")
+	// expunge at the end
+	allMsgs, _ := imap.NewSeqSet("")
+	allMsgs.Add("1:*")
+	imap.Wait(conn.Expunge(allMsgs))
+	log.Printf("expunge complete.")
 }
 
 type checkExistsRequest struct {
@@ -119,16 +119,8 @@ type checkExistsRequest struct {
 	Response  chan bool
 }
 
-func checkMessagesExist(src InboxInfo, checkRequests chan checkExistsRequest, wg *sync.WaitGroup) {
+func checkMessagesExist(srcConn *imap.Client, checkRequests chan checkExistsRequest, wg *sync.WaitGroup) {
 	defer wg.Done()
-
-	// get imap conn
-	srcConn, err := GetConnection(src, true)
-	if err != nil {
-		log.Printf("Problems connecting to source: %s", err.Error())
-		return
-	}
-
 	// get memcache client
 	cache := memcache.New(MemcacheServer)
 
