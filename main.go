@@ -29,7 +29,11 @@ var (
 	exampleConfig = flag.Bool("example-config", false, "View an example layout for a json config file meant to hold multiple destination accounts.")
 
 	// single run or idle and wait
-	idle = flag.Bool("idle", false, "Sync the mailboxes and then idle and wait for updates.")
+	idle = flag.Bool("idle", false, "Sync the mailboxes and then idle and wait for updates. Creates an additional connection for each inbox.")
+	sync = flag.Bool("sync", true, "Run a sync of the mailboxes. Flag helpful for skipping sync with bandwidth usage is limited.")
+
+	// # of IMAP connections per mailbox
+	conns = flag.Int("c", 2, "The number of concurrent IMAP connections for each inbox during Syncing. Large #s may run faster but you may risk reaching connection/bandwidth limits for you email provider.")
 
 	// accept log file too
 	logFile = flag.String("log", "", "Location to write logs to. stderr by default. If set, a HUP signal will handle logrotate.")
@@ -42,6 +46,10 @@ func main() {
 	if *exampleConfig {
 		fmt.Print(getExampleConfig())
 		return
+	}
+
+	if *conns <= 0 {
+		*conns = 10
 	}
 
 	var srcInfo copycat.InboxInfo
@@ -89,15 +97,21 @@ func main() {
 		go utils.ListenForLogSignal(logger)
 	}
 
-	cat, err := copycat.NewCopyCat(srcInfo, dstInfos)
-	if err != nil {
-		log.Printf("Problems creating new copycat: %s", err.Error())
-	}
-	
-	if *idle {
-		cat.SyncAndIdle()
-	} else {
-		cat.Sync()
+	switch {
+	case *sync:
+		cat, err := copycat.NewCopyCat(srcInfo, dstInfos, *conns)
+		if err != nil {
+			log.Printf("Problems creating new copycat: %s", err.Error())
+		}
+		
+		if *idle {
+			cat.SyncAndIdle()
+		} else {
+			cat.Sync()
+		}
+	case *idle:
+		cat := &copycat.CopyCat{SourceInfo: srcInfo, DestInfos: dstInfos}
+		cat.Idle()
 	}
 }
 

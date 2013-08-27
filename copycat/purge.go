@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/mail"
 	"sync"
+	"time"
 
 	"code.google.com/p/go-imap/go1/imap"
 	"github.com/bradfitz/gomemcache/memcache"
@@ -63,6 +64,7 @@ func purgeDestination(user string, dsts []*imap.Client, checkRequests chan check
 	// build the requests and send them
 	var rsp *imap.Response
 	var indx int
+	startTime := time.Now()
 	log.Printf("Beginning check/purge for %s with %d messages", user, len(cmd.Data))
 	for indx, rsp = range cmd.Data {
 		header := imap.AsBytes(rsp.MessageInfo().Attrs["RFC822.HEADER"])
@@ -73,12 +75,15 @@ func purgeDestination(user string, dsts []*imap.Client, checkRequests chan check
 			// create the store request and pass it to each dst's storers
 			workRequests <- WorkRequest{Value: value, Header: header, UID: rsp.MessageInfo().UID}
 
-			if (indx % 200) == 0 {
-				log.Printf("Processed %d messages from %s", indx, user)
+			if ((indx % 100) == 0) && (indx > 0) {
+				since := time.Since(startTime)
+				rate := float64(100 / (since / time.Second))
+				startTime = time.Now()
+				log.Printf("Processed %d messages from %s. Rate: %f msg/s", indx, user, rate)
 			}
 		}
 	}
-	
+
 	close(workRequests)
 	purgers.Wait()
 
@@ -97,9 +102,7 @@ func checkAndPurgeMessages(conn *imap.Client, requests chan WorkRequest, checkRe
 		// if response is false (does not exist), flag as Deleted
 		if exists := <-response; !exists {
 			log.Printf("not found in src. marking for deletion: %s", request.Value)
-			seqSet, _ := imap.NewSeqSet("")
-			seqSet.AddNum(request.UID)
-			_, err := conn.UIDStore(seqSet, "+FLAGS", imap.NewFlagSet(`\Deleted`))
+			err := AddDeletedFlag(conn, request.UID)
 			if err != nil {
 				log.Printf("Problems removing message from dst: %s", err.Error())
 			}
@@ -123,7 +126,6 @@ func checkMessagesExist(srcConn *imap.Client, checkRequests chan checkExistsRequ
 	defer wg.Done()
 	// get memcache client
 	cache := memcache.New(MemcacheServer)
-
 	for request := range checkRequests {
 
 		// check if it exists in src
