@@ -67,15 +67,9 @@ So far, this tool has only been tested with GMail accounts. In order for Copycat
 #### Dependencies
 To limit precious IMAP bandwidth usage (even GMail only allows ~2.8GB transfers via IMAP per day), CopyCat uses memcached to store messages by their Message-Id. It expects it to be running on localhost:11211.
 
-This tool makes use of a few external libraries that you'll need to 'go get' if you plan on using it as a library:
+This tool makes use of a couple external libraries that you'll need to 'go get' if you plan on using it as a library:
 
-Go-IMAP
-code.google.com/p/go-imap/go1/imap
-
-gomemcache
-github.com/bradfitz/gomemcache/memcache
-
-jprobinson's go-utils [logging]
-github.com/jprobinson/go-utils/utils
+* [Go-IMAP](https://code.google.com/p/go-imap/)
+* [gomemcache](https://github.com/bradfitz/gomemcache)
     
     
