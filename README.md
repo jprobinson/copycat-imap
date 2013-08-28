@@ -3,7 +3,7 @@
 
 Copycat is a tool to replicate an Email inbox to one or more destination inboxes.
 
-It can be ran to sync a single time or run as a background process to sync and then wait for change updates from the IMAP server.
+It can be run to sync inboxes a single time or as a background process to sync and then wait for change updates from the IMAP server.
 
 -------
 
