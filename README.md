@@ -1,5 +1,4 @@
 # Copycat IMAP
-=============
 
 Copycat is a tool to replicate an Email inbox to one or more destination inboxes.
 
