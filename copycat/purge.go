@@ -11,7 +11,7 @@ import (
 	"github.com/bradfitz/gomemcache/memcache"
 )
 
-// searchAndPurge will go through the destination inboxes and check if
+// SearchAndPurge will go through the destination inboxes and check if
 // each message exists in the source inbox. If a message does not exist
 // in the source, delete it from the destination.
 func SearchAndPurge(src []*imap.Client, dsts map[string][]*imap.Client) error {
@@ -77,7 +77,7 @@ func purgeDestination(user string, dsts []*imap.Client, checkRequests chan check
 
 			if ((indx % 100) == 0) && (indx > 0) {
 				since := time.Since(startTime)
-				rate := float64(100 / (since / time.Second))
+				rate := 100 / since.Seconds()
 				startTime = time.Now()
 				log.Printf("Processed %d messages from %s. Rate: %f msg/s", indx, user, rate)
 			}

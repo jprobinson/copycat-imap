@@ -63,7 +63,7 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 
 			if ((indx % 100) == 0) && (indx > 0) {
 				since := time.Since(startTime)
-				rate := float64(100 / (since / time.Second))
+				rate := 100 / since.Seconds()
 				startTime = time.Now()
 				log.Printf("Completed store processing for %d messages from the source inbox. Rate: %f msg/s", indx, rate)
 			}
@@ -151,7 +151,6 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest, wg *sync.WaitGro
 
 			// if its there, respond with it
 			if len(data.Body) > 0 {
-				log.Printf("found in cache!")
 				request.Response <- data
 				continue
 			}

@@ -12,46 +12,58 @@ import (
 	"code.google.com/p/go-imap/go1/imap"
 )
 
-// Idle will make sure that the dst inbox looks exactly like the src.
-func Idle(src *imap.Client, dsts []*imap.Client) (err error) {
+const idleTimeoutMinutes = 20
+
+// Idle setup the processes to wait for notifications from the IMAP source connection.
+// If an EXISTS or EXPUNGE command comes across the pipe, the appropriate actions will be
+// taken to update the destinations. If the process decides the inboxes are out of sync,
+// it will pass a bool to the requestPurge channel. It is expected that the requestPurge
+// channel is setup to initiate a purge process when it receives the notificaiton.
+func Idle(src *imap.Client, dsts []*imap.Client, requestPurge chan bool) (err error) {
+	// uid->message-Id map for handling EXPUNGE commands
 	cache, err := createUIDMap(src)
 	if err != nil {
 		return err
 	}
+	// hold the size so we can determine how to react to commands
+	mailboxSize := uint32(len(cache))
 
-	// get next UID for appending
+	// get next UID for appending (handling EXISTS commands)
 	nextUID, err := getNextUID(src)
 	if err != nil {
 		log.Printf("Unable to get next UID: %s", err.Error())
 		return err
 	}
-	log.Printf("Grabbed next UID: %d", nextUID)
 
 	// setup interrupt signal channel to terminate the idle
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt, os.Kill)
 
-	// setup poller signal for checking for data
+	// setup ticker to reset the idle every 20 minutes (RFC-2177 recommends 29 mins max)
+	timeout := time.NewTicker(idleTimeoutMinutes * time.Minute)
+
+	// setup poller signal for checking for data on the idle command
 	poll := make(chan bool, 1)
 	poll <- true
 
 	log.Print("beginning idle...")
 	_, idleErr := src.Idle()
-	if idleErr != nil {
-		log.Printf("Idle fail: %s", idleErr.Error())
+	if (idleErr != nil) && (idleErr != imap.ErrTimeout) {
+		log.Printf("Idle error: %s", idleErr.Error())
 		return
 	}
 
 	for {
 
 		select {
+		// if we receive a 'poll' we should check the pipe for new messages
 		case <-poll:
 
-			log.Print("checking for changes...")
 			err = src.Recv(0)
-			if err != nil {
-				log.Printf("Ran into error: %s", err.Error())
-				goto wait
+			if (idleErr != nil) && (idleErr != imap.ErrTimeout) {
+				log.Printf("Idle error: %s", idleErr.Error())
+				go sleep(poll)
+				continue
 			}
 
 			for _, data := range src.Data {
@@ -59,54 +71,54 @@ func Idle(src *imap.Client, dsts []*imap.Client) (err error) {
 				case imap.Data:
 					// len of 2 likely means its an EXPUNGE or EXISTS command...
 					if len(data.Fields) == 2 {
-						msgUID := imap.AsNumber(data.Fields[0])
+						msgNum := imap.AsNumber(data.Fields[0])
 
 						switch data.Fields[1] {
 						case "EXPUNGE":
-							log.Print("Received an EXPUNGE notification")
+							log.Printf("Received an EXPUNGE notification - %d", msgNum)
 							// use our handy-dandy map[uid]messageId to lookup and purge
-							if messageId, exists := cache[msgUID]; exists {
+							if messageId, exists := cache[msgNum]; exists {
 								expungeMessage(dsts, messageId)
+							} else {
+								log.Printf("messaged (%d) does not exist in cache. Requesting a purge.")
+								requestPurge <- true
 							}
 
 						case "EXISTS":
 							log.Print("Received an EXISTS notification")
+							if mailboxSize > msgNum {
+								log.Printf("Mailbox decreased in size %d --> %d. Requesting a purge.", mailboxSize, msgNum)
+								requestPurge <- true
+								mailboxSize = msgNum
+								continue
+							}
+
 							// temporarily term the idle so we can fetch the message
-							_, err = src.IdleTerm()
-							if err != nil {
+							if _, err = src.IdleTerm(); err != nil {
 								log.Printf("error while temporarily terminating idle: %s", err.Error())
 								return
 							}
 							log.Printf("terminated idle. appending message.")
 
 							// get message data and append it
-							err = appendNewMessage(src, dsts, nextUID)
-							if err != nil {
-								log.Printf("error while appending new message (%d): %s. MAILBOXES MAY BE OUT OF SYNC.", msgUID, err.Error())
-								continue
+							if err = appendNewMessage(src, dsts, cache, nextUID); err == nil {
+								nextUID++
+							} else {
+								log.Printf("error while appending new message (%d): %s. MAILBOXES MAY BE OUT OF SYNC.", nextUID, err.Error())
 							}
-							nextUID++
 
 							log.Printf("continuing idle...")
-
 							// turn idle back on
-							_, err = src.Idle()
-							if err != nil {
+							if _, err = src.Idle(); err != nil {
 								log.Printf("Unable to restart idle: %s", err.Error())
 								return
 							}
 						}
 					}
-				case imap.Status:
-
 				}
 			}
 			src.Data = nil
-		wait:
-			go func() {
-				time.Sleep(20 * time.Second)
-				poll <- true
-			}()
+			go sleep(poll)
 
 		case <-interrupt:
 			log.Printf("Received interrupt. Terminating idle...")
@@ -115,10 +127,31 @@ func Idle(src *imap.Client, dsts []*imap.Client) (err error) {
 				log.Printf("error while terminating idle: %s", err.Error())
 			}
 			return
+		case <-timeout.C:
+			log.Printf("resetting idle...")
+			_, err = src.IdleTerm()
+			if err != nil {
+				log.Printf("error while temporarily terminating idle: %s", err.Error())
+				return
+			}
+			log.Printf("terminated idle.")
+
+			// turn idle back on
+			_, err = src.Idle()
+			if err != nil {
+				log.Printf("Unable to restart idle: %s", err.Error())
+				return
+			}
+			log.Printf("idle restarted.")
 		}
 	}
 
 	return
+}
+
+func sleep(poll chan bool) {
+	time.Sleep(20 * time.Second)
+	poll <- true
 }
 
 func createUIDMap(conn *imap.Client) (map[uint32]string, error) {
@@ -149,14 +182,14 @@ func expungeMessage(dsts []*imap.Client, messageId string) {
 		cmd, err := imap.Wait(dst.UIDSearch([]imap.Field{"HEADER", "Message-Id", messageId}))
 		if err != nil {
 			log.Printf("Unable to search for message (%s): %s", messageId, err.Error())
-			continue
+			return
 		}
 
 		results := cmd.Data[0].SearchResults()
 		// if not found, give up and move on
 		if len(results) == 0 {
 			log.Printf("Message (%s) not found in dst", messageId)
-			continue
+			return
 		}
 
 		// add deleted flag
@@ -172,7 +205,7 @@ func expungeMessage(dsts []*imap.Client, messageId string) {
 	}
 }
 
-func appendNewMessage(src *imap.Client, dsts []*imap.Client, uid uint32) error {
+func appendNewMessage(src *imap.Client, dsts []*imap.Client, cache map[uint32]string, uid uint32) error {
 	log.Printf("fetching message (%d) from source", uid)
 	//fetch from source
 	msg, err := FetchMessage(src, uid)
@@ -181,9 +214,15 @@ func appendNewMessage(src *imap.Client, dsts []*imap.Client, uid uint32) error {
 		return err
 	}
 
+	// get the message-id and toss it in the cache
+	if msg, _ := mail.ReadMessage(bytes.NewReader(msg.Body)); msg != nil {
+		msgId := msg.Header.Get("Message-Id")
+		cache[uid] = msgId
+		log.Printf("Set new cache value [%d]=%s", uid, msgId)
+	}
+
 	for _, dst := range dsts {
-		err := AppendMessage(dst, msg)
-		if err != nil {
+		if err := AppendMessage(dst, msg); err != nil {
 			log.Printf("Problems appeneding new message to destination: %s. INBOXES MAY NOT BE IN SYNC", err.Error())
 		}
 	}
@@ -192,7 +231,7 @@ func appendNewMessage(src *imap.Client, dsts []*imap.Client, uid uint32) error {
 }
 
 func getNextUID(src *imap.Client) (uint32, error) {
-	cmd, err := src.Status("INBOX")
+	cmd, err := imap.Wait(src.Status("INBOX", "UIDNEXT"))
 	if err != nil {
 		return 0, err
 	}
@@ -201,24 +240,14 @@ func getNextUID(src *imap.Client) (uint32, error) {
 		return 0, errors.New("no data returned!")
 	}
 
-	log.Printf("src data lenght %d", len(src.Data))
-
 	var status *imap.MailboxStatus
 	for _, resp := range cmd.Data {
-		for _, f := range resp.Fields {
-			log.Printf("fields: %s", imap.AsString(f))
-		}
 		switch resp.Type {
-		case imap.Status:
-			log.Printf("got a status")
+		case imap.Data:
 			status = resp.MailboxStatus()
 			if status != nil {
-				log.Print("BREAK")
 				break
 			}
-
-		default:
-			log.Printf("got a %s", resp.Type)
 		}
 	}
 

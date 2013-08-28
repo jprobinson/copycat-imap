@@ -1,7 +1,7 @@
-Copycat IMAP
+# Copycat IMAP
 =============
 
-Copycat is a tool to sync two or more email inboxes. 
+Copycat is a tool to replicate an Email inbox to one or more child
 
 It can be ran to sync a single time or run as a background process to sync and then wait for change updates from the server.
 

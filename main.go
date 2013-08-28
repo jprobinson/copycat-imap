@@ -97,21 +97,16 @@ func main() {
 		go utils.ListenForLogSignal(logger)
 	}
 
+	cat, err := copycat.NewCopyCat(srcInfo, dstInfos, *conns)
+	if err != nil {
+		log.Printf("Problems creating new copycat: %s", err.Error())
+	}
+
 	switch {
-	case *sync:
-		cat, err := copycat.NewCopyCat(srcInfo, dstInfos, *conns)
-		if err != nil {
-			log.Printf("Problems creating new copycat: %s", err.Error())
-		}
-		
-		if *idle {
-			cat.SyncAndIdle()
-		} else {
-			cat.Sync()
-		}
 	case *idle:
-		cat := &copycat.CopyCat{SourceInfo: srcInfo, DestInfos: dstInfos}
-		cat.Idle()
+		cat.Idle(*sync)
+	case *sync:
+		cat.Sync()
 	}
 }
 
