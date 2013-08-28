@@ -13,6 +13,8 @@ const (
 	MemcacheServer = "localhost:11211"
 )
 
+// NewCopyCat will create a new CopyCat instance that has all of its expected connections for
+// syncing and idling.
 func NewCopyCat(src InboxInfo, dsts []InboxInfo, connsPerInbox int) (cat *CopyCat, err error) {
 	// pull user names for logging
 	var dstUsers []string
@@ -40,16 +42,12 @@ func NewCopyCat(src InboxInfo, dsts []InboxInfo, connsPerInbox int) (cat *CopyCa
 
 // CopyCat represents a process waiting to copy
 type CopyCat struct {
+	//TODO: decide if we really need to hold onto this info
 	SourceInfo InboxInfo
 	DestInfos  []InboxInfo
 
 	SyncConns conns
 	IdleConns conns
-}
-
-type conns struct {
-	Source []*imap.Client
-	Dest   map[string][]*imap.Client
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
@@ -260,4 +258,9 @@ type WorkRequest struct {
 	Value  string
 	Header string
 	UID    uint32
+}
+
+type conns struct {
+	Source []*imap.Client
+	Dest   map[string][]*imap.Client
 }
