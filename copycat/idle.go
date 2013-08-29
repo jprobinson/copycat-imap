@@ -147,6 +147,8 @@ func Idle(src *imap.Client, dsts []*imap.Client, requestPurge chan bool) (err er
 	return
 }
 
+// appendNewMessage will attempt to fetch the message from src and append it to all the given
+// source connections.
 func appendNewMessage(src *imap.Client, dsts []*imap.Client, uid uint32) (err error) {
 	// we want the last appeneded message.
 	log.Printf("fetching message (%d) from source", uid)
@@ -174,6 +176,7 @@ func appendNewMessage(src *imap.Client, dsts []*imap.Client, uid uint32) (err er
 	return nil
 }
 
+// getNextUID will grab the next message UID from the inbox. Client.Mailbox.UIDNext is cached so we can't use it.
 func getNextUID(conn *imap.Client) (uint32, error) {
 	cmd, err := imap.Wait(conn.Status("INBOX", "UIDNEXT"))
 	if err != nil {
@@ -198,6 +201,7 @@ func getNextUID(conn *imap.Client) (uint32, error) {
 	return status.UIDNext, nil
 }
 
+// sleep is for sleeping. zZZzzZZzzZZzzz
 func sleep(poll chan bool) {
 	time.Sleep(10 * time.Second)
 	poll <- true

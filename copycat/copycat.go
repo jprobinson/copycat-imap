@@ -219,12 +219,10 @@ func GetConnection(info InboxInfo, readOnly bool) (*imap.Client, error) {
 }
 
 func ResetConnection(conn *imap.Client, readOnly bool) error {
-	_, err := conn.Close(!readOnly)
-	if err != nil {
-		return err
-	}
+	// dont check for error because its possible it's already closed.
+	conn.Close(!readOnly)
 	
-	_, err = imap.Wait(conn.Select("INBOX", readOnly))
+	_, err := imap.Wait(conn.Select("INBOX", readOnly))
 	if err != nil {
 		return err
 	}

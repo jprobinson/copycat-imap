@@ -86,6 +86,9 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 	return nil
 }
 
+// checkAndStoreMessages will wait for WorkRequests to come acorss the pipe. When it receives a request, it will search
+// the given destination inbox for the message. If it is not found, this method will attempt to pull the messages data
+// from fetchRequests and then append it to the destination.
 func checkAndStoreMessages(dstConn *imap.Client, storeRequests chan WorkRequest, fetchRequests chan fetchRequest, wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -207,7 +210,7 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest, wg *sync.WaitGro
 	}
 }
 
-// Serialize encodes a value using gob.
+// serialize encodes a value using gob.
 func serialize(src interface{}) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	enc := gob.NewEncoder(buf)
@@ -218,7 +221,7 @@ func serialize(src interface{}) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Deserialize decodes a value using gob.
+// deserialize decodes a value using gob.
 func deserialize(src []byte, dst interface{}) error {
 	buf := bytes.NewBuffer(src)
 	dec := gob.NewDecoder(buf)
