@@ -101,6 +101,7 @@ func Idle(src *imap.Client, dsts []*imap.Client, requestPurge chan bool) (err er
 									log.Printf("error while appending new message: %s. MAILBOXES MAY BE OUT OF SYNC.", err.Error())
 								} else {
 									nextUID++
+									startSize++
 								}
 							}
 

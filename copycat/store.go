@@ -100,9 +100,10 @@ func checkAndStoreMessages(dstConn *imap.Client, storeRequests chan WorkRequest,
 		// search for in dst
 		cmd, err := imap.Wait(dstConn.UIDSearch([]imap.Field{"HEADER", request.Header, request.Value}))
 		if err != nil {
-			log.Printf("Unable to search for message (%s): %s", request.Value, err.Error())
+			log.Printf("Unable to search for message (%s): %s. Resetting connection.", request.Value, err.Error())
 			// close and select.
 			if err := ResetConnection(dstConn, true); err != nil {
+				log.Printf("Connection reset failed. Quitting: %s", err.Error())
 				return
 			}
 			failures++
@@ -180,8 +181,9 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest, wg *sync.WaitGro
 
 		msgData, err := FetchMessage(conn, request.UID)
 		if err != nil {
-			log.Printf("Problems fetching message (%s) data: %s", request.MessageId, err.Error())
+			log.Printf("Problems fetching message (%s) data: %s. Resetting connection.", request.MessageId, err.Error())
 			if err := ResetConnection(conn, true); err != nil {
+				log.Printf("Connection reset failed. Quitting: %s", err.Error())
 				return
 			}
 			failures++
