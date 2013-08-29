@@ -35,7 +35,7 @@ func NewCopyCat(src InboxInfo, dsts []InboxInfo, connsPerInbox int) (cat *CopyCa
 		log.Printf("unable to initiate sync connections: %s", err.Error())
 		return cat, err
 	}
-	log.Printf("created 1 connection per inbox for idling/updating", connsPerInbox)
+	log.Print("created 1 connection per inbox for idling/updating")
 
 	return cat, nil
 }
@@ -92,7 +92,7 @@ func (c *CopyCat) Idle(runSync bool) (err error) {
 		dstConns = append(dstConns, conns[0])
 	}
 
-	// idle ... sync on any notification...only if we can make sync superfast.
+	// idle...
 	err = Idle(srcConn, dstConns, purgeRequests)
 	if err != nil {
 		log.Print("IDLE ERROR: ", err.Error())
@@ -216,6 +216,20 @@ func GetConnection(info InboxInfo, readOnly bool) (*imap.Client, error) {
 	}
 
 	return conn, nil
+}
+
+func ResetConnection(conn *imap.Client, readOnly bool) error {
+	_, err := conn.Close(!readOnly)
+	if err != nil {
+		return err
+	}
+	
+	_, err = imap.Wait(conn.Select("INBOX", readOnly))
+	if err != nil {
+		return err
+	}
+	
+	return nil
 }
 
 func initiateConnections(srcInfo InboxInfo, dstInfos []InboxInfo, connsPerInbox int) (conns conns, err error) {

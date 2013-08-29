@@ -79,7 +79,7 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 
 	// once the storers are complete we can close the fetch channel
 	close(fetchRequests)
-	// and then wait for the fetchers close connections
+	// and then wait for the fetchers to stop
 	fetchers.Wait()
 
 	log.Printf("search and store processes complete")
@@ -89,13 +89,24 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 func checkAndStoreMessages(dstConn *imap.Client, storeRequests chan WorkRequest, fetchRequests chan fetchRequest, wg *sync.WaitGroup) {
 	defer wg.Done()
 
+	failures := 0
 	for request := range storeRequests {
+	retry:
+		if failures > 5 {
+			log.Printf("storer encountered too many failures. giving up.")
+			return
+		}
 
 		// search for in dst
 		cmd, err := imap.Wait(dstConn.UIDSearch([]imap.Field{"HEADER", request.Header, request.Value}))
 		if err != nil {
 			log.Printf("Unable to search for message (%s): %s", request.Value, err.Error())
-			continue
+			// close and select.
+			if err := ResetConnection(dstConn, true); err != nil {
+				return
+			}
+			failures++
+			goto retry
 		}
 
 		results := cmd.Data[0].SearchResults()
@@ -111,13 +122,17 @@ func checkAndStoreMessages(dstConn *imap.Client, storeRequests chan WorkRequest,
 			messageData := <-response
 			if len(messageData.Body) == 0 {
 				log.Printf("No data found in message fetch request (%s)", request.Value)
-				continue
+				goto retry
 			}
 
 			err = AppendMessage(dstConn, messageData)
 			if err != nil {
 				log.Printf("Problems appending message to dst: %s", err.Error())
-				continue
+				if err := ResetConnection(dstConn, true); err != nil {
+					return
+				}
+				failures++
+				goto retry
 			}
 
 		}
@@ -139,7 +154,14 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest, wg *sync.WaitGro
 	// connect to memcached
 	cache := memcache.New(MemcacheServer)
 
+	failures := 0
 	for request := range requests {
+	retry:
+		if failures > 5 {
+			log.Printf("storer encountered too many failures. giving up.")
+			return
+		}
+		
 		// check if the message body is in memcached
 		if msgBytes, err := cache.Get(request.MessageId); err == nil {
 			var data MessageData
@@ -159,7 +181,11 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest, wg *sync.WaitGro
 		msgData, err := FetchMessage(conn, request.UID)
 		if err != nil {
 			log.Printf("Problems fetching message (%s) data: %s", request.MessageId, err.Error())
-			continue
+			if err := ResetConnection(conn, true); err != nil {
+				return
+			}
+			failures++
+			goto retry
 		}
 		request.Response <- msgData
 
