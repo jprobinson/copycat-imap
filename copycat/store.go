@@ -108,7 +108,6 @@ func CheckAndAppendMessages(dstConn *imap.Client, storeRequests chan WorkRequest
 			if len(results) == 0 {
 				// only fetch if we dont have data already
 				if len(request.Msg.Body) == 0 {
-					log.Printf("making a fetch request")
 					// build and send fetch request
 					response := make(chan MessageData)
 					fr := fetchRequest{MessageId: request.Value, UID: request.UID, Response: response}
