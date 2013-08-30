@@ -97,7 +97,6 @@ func CheckAndAppendMessages(dstConn *imap.Client, storeRequests chan WorkRequest
 				done = true
 				break
 			}
-			log.Printf("new append request for %s. checking if exists in dest.", request.Value)
 			// search for in dst
 			cmd, err := imap.Wait(dstConn.UIDSearch([]imap.Field{"HEADER", request.Header, request.Value}))
 			if err != nil {
@@ -107,7 +106,6 @@ func CheckAndAppendMessages(dstConn *imap.Client, storeRequests chan WorkRequest
 			results := cmd.Data[0].SearchResults()
 			// if not found, PULL from SRC and STORE in DST
 			if len(results) == 0 {
-				log.Printf("%s not in dest. Attempting to append.", request.Value)
 				// only fetch if we dont have data already
 				if len(request.Msg.Body) == 0 {
 					log.Printf("making a fetch request")
@@ -124,7 +122,6 @@ func CheckAndAppendMessages(dstConn *imap.Client, storeRequests chan WorkRequest
 					continue
 				}
 				
-				log.Printf("appending %s", request.Value)
 				err = AppendMessage(dstConn, request.Msg)
 				if err != nil {
 					log.Printf("Problems appending message to dst: %s. quitting.", err.Error())
