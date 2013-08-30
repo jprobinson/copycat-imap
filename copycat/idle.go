@@ -19,7 +19,7 @@ const idleTimeoutMinutes = 20
 // taken to update the destinations. If the process decides the inboxes are out of sync,
 // it will pass a bool to the requestPurge channel. It is expected that the requestPurge
 // channel is setup to initiate a purge process when it receives the notificaiton.
-func Idle(src *imap.Client, dsts []*imap.Client, requestPurge chan bool) (err error) {
+func Idle(src *imap.Client, appendRequests []chan WorkRequest, requestPurge chan bool) (err error) {
 	var nextUID uint32
 	if nextUID, err = getNextUID(src); err != nil {
 		log.Printf("Unable to get UIDNext: %s", err.Error())
@@ -96,12 +96,18 @@ func Idle(src *imap.Client, dsts []*imap.Client, requestPurge chan bool) (err er
 							newMessages := msgNum - startSize
 							log.Printf("attempting to find/append %d new messages", newMessages)
 							for i := uint32(0); i < newMessages; i++ {
-								// get message data and append it
-								if err = appendNewMessage(src, dsts, nextUID); err != nil {
-									log.Printf("error while appending new message: %s. MAILBOXES MAY BE OUT OF SYNC.", err.Error())
-								} else {
+								var request WorkRequest
+								if request, err = getMessageInfo(src, nextUID); err == nil {
+
+									log.Printf("creating %d append requests for %d", len(appendRequests), nextUID)
+									for _, requests := range appendRequests {
+										requests <- request
+									}
+									log.Printf("done creating append requests for %d", nextUID)
 									nextUID++
 									startSize++
+								} else {
+									log.Printf("Unable to find message for UID (%d): %s", nextUID, err.Error())
 								}
 							}
 
@@ -147,33 +153,26 @@ func Idle(src *imap.Client, dsts []*imap.Client, requestPurge chan bool) (err er
 	return
 }
 
-// appendNewMessage will attempt to fetch the message from src and append it to all the given
-// source connections.
-func appendNewMessage(src *imap.Client, dsts []*imap.Client, uid uint32) (err error) {
-	// we want the last appeneded message.
-	log.Printf("fetching message (%d) from source", uid)
-	//fetch from source
-	var msg MessageData
-	if msg, err = FetchMessage(src, uid); err != nil {
-		log.Printf("errors fetching message: %s", err.Error())
-		return err
+func getMessageInfo(conn *imap.Client, uid uint32) (WorkRequest, error) {
+	log.Printf("fetching data for (%d) from src for idle", uid)
+
+	// get headers and UID for ALL message in src inbox...
+	msg, err := FetchMessage(conn, uid)
+	if err != nil {
+		return WorkRequest{}, err
 	}
 
-	var msgId string
-	// get the message-id for logging purposes
+	var request WorkRequest
 	if mesg, _ := mail.ReadMessage(bytes.NewReader(msg.Body)); mesg != nil {
-		msgId = mesg.Header.Get("Message-Id")
+		header := "Message-Id"
+		value := mesg.Header.Get(header)
+		request = WorkRequest{Value: value, Header: header, UID: uid, Msg: msg}
+	} else {
+		return request, errors.New("message was empty")
 	}
 
-	for _, dst := range dsts {
-		if err = AppendMessage(dst, msg); err != nil {
-			log.Printf("Problems appeneding new message to destination: %s. INBOXES MAY NOT BE IN SYNC", err.Error())
-		} else {
-			log.Printf("successfully appended message (%s) to destination. during idle", msgId)
-		}
-	}
-
-	return nil
+	log.Printf("fetched data for %d!", uid)
+	return request, nil
 }
 
 // getNextUID will grab the next message UID from the inbox. Client.Mailbox.UIDNext is cached so we can't use it.

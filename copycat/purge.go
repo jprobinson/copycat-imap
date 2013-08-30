@@ -92,22 +92,33 @@ func purgeDestination(user string, dsts []*imap.Client, checkRequests chan check
 
 func checkAndPurgeMessages(conn *imap.Client, requests chan WorkRequest, checkRequests chan checkExistsRequest, wg *sync.WaitGroup) {
 	defer wg.Done()
-
-	for request := range requests {
-		// check and wait for response
-		response := make(chan bool)
-		cr := checkExistsRequest{UID: request.UID, MessageId: request.Value, Response: response}
-		checkRequests <- cr
-
-		// if response is false (does not exist), flag as Deleted
-		if exists := <-response; !exists {
-			log.Printf("not found in src. marking for deletion: %s", request.Value)
-			err := AddDeletedFlag(conn, request.UID)
-			if err != nil {
-				log.Printf("Problems removing message from dst: %s", err.Error())
+	
+	timeout := time.NewTicker(NoopMinutes * time.Minute)
+	
+	for {
+		select {
+		case request, ok := <- requests:
+			if !ok {
+				break
 			}
+			// check and wait for response
+			response := make(chan bool)
+			cr := checkExistsRequest{UID: request.UID, MessageId: request.Value, Response: response}
+			checkRequests <- cr
+
+			// if response is false (does not exist), flag as Deleted
+			if exists := <-response; !exists {
+				log.Printf("not found in src. marking for deletion: %s", request.Value)
+				err := AddDeletedFlag(conn, request.UID)
+				if err != nil {
+					log.Printf("Problems removing message from dst: %s", err.Error())
+				}
+			}
+		case <- timeout.C:
+			imap.Wait(conn.Noop())
 		}
 	}
+
 	log.Printf("expunging...")
 	// expunge at the end
 	allMsgs, _ := imap.NewSeqSet("")
@@ -126,27 +137,38 @@ func checkMessagesExist(srcConn *imap.Client, checkRequests chan checkExistsRequ
 	defer wg.Done()
 	// get memcache client
 	cache := memcache.New(MemcacheServer)
-	for request := range checkRequests {
+	
+	timeout := time.NewTicker(NoopMinutes * time.Minute)
+	
+	for {
+		select {
+		case request, ok := <- checkRequests:
+			if !ok {
+				break
+			}
+			// check if it exists in src
+			// search for in src
+			cmd, err := imap.Wait(srcConn.UIDSearch([]imap.Field{"HEADER", "Message-Id", request.MessageId}))
+			if err != nil {
+				log.Printf("Unable to search source: %s", err.Error())
+				request.Response <- false
+				continue
+			}
 
-		// check if it exists in src
-		// search for in src
-		cmd, err := imap.Wait(srcConn.UIDSearch([]imap.Field{"HEADER", "Message-Id", request.MessageId}))
-		if err != nil {
-			log.Printf("Unable to search source: %s", err.Error())
-			request.Response <- false
-			continue
-		}
+			results := cmd.Data[0].SearchResults()
+			// if not found, mark for deletion in DST
+			found := (len(results) > 0)
 
-		results := cmd.Data[0].SearchResults()
-		// if not found, mark for deletion in DST
-		found := (len(results) > 0)
+			// response with found bool
+			request.Response <- found
 
-		// response with found bool
-		request.Response <- found
-
-		// if it doesnt exist, attempt to remove it from memcached
-		if !found {
-			cache.Delete(request.MessageId)
+			// if it doesnt exist, attempt to remove it from memcached
+			if !found {
+				cache.Delete(request.MessageId)
+			}			
+		case <- timeout.C:
+			imap.Wait(srcConn.Noop())
 		}
 	}
+
 }

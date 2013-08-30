@@ -97,7 +97,7 @@ func main() {
 		go utils.ListenForLogSignal(logger)
 	}
 
-	cat, err := copycat.NewCopyCat(srcInfo, dstInfos, *conns)
+	cat, err := copycat.NewCopyCat(srcInfo, dstInfos, *conns, *sync, *idle)
 	if err != nil {
 		log.Printf("Problems creating new copycat: %s", err.Error())
 	}

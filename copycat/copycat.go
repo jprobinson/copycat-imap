@@ -5,17 +5,21 @@ import (
 	"errors"
 	"log"
 	"time"
+	"sync"
 
 	"code.google.com/p/go-imap/go1/imap"
 )
 
 const (
 	MemcacheServer = "localhost:11211"
+	NoopMinutes    = 15
 )
+
+var NotFound = errors.New("message not found")
 
 // NewCopyCat will create a new CopyCat instance that has all of its expected connections for
 // syncing and idling.
-func NewCopyCat(src InboxInfo, dsts []InboxInfo, connsPerInbox int) (cat *CopyCat, err error) {
+func NewCopyCat(src InboxInfo, dsts []InboxInfo, connsPerInbox int, sync bool, idle bool) (cat *CopyCat, err error) {
 	// pull user names for logging
 	var dstUsers []string
 	for _, usr := range dsts {
@@ -23,31 +27,43 @@ func NewCopyCat(src InboxInfo, dsts []InboxInfo, connsPerInbox int) (cat *CopyCa
 	}
 	log.Printf("Creating CopyCat to to sync %s's contents to the following mailbox(s):  %s", src.User, dstUsers)
 
-	cat = &CopyCat{SourceInfo: src, DestInfos: dsts}
-
-	if cat.SyncConns, err = initiateConnections(src, dsts, connsPerInbox); err != nil {
-		log.Printf("unable to initiate sync connections: %s", err.Error())
-		return cat, err
+	cat = &CopyCat{}
+	if sync {
+		if cat.SyncConns, err = initiateConnections(src, dsts, connsPerInbox); err != nil {
+			log.Printf("unable to initiate sync connections: %s", err.Error())
+			return cat, err
+		}
+		log.Printf("created %d connections per inbox for syncing", connsPerInbox)
 	}
-	log.Printf("created %d connections per inbox for syncing", connsPerInbox)
 
-	if cat.IdleConns, err = initiateConnections(src, dsts, 1); err != nil {
-		log.Printf("unable to initiate sync connections: %s", err.Error())
-		return cat, err
+	if idle {
+		if cat.IdlePurgeConns, err = initiateConnections(src, dsts, 2); err != nil {
+			log.Printf("unable to initiate idle connections: %s", err.Error())
+			return cat, err
+		}
+		log.Print("created 2 connection per inbox for idling purging")
+
+		if cat.IdleAppendConns, err = initiateConnections(src, dsts, 1); err != nil {
+			log.Printf("unable to initiate idle connections: %s", err.Error())
+			return cat, err
+		}
+		log.Print("created 1 connection per inbox for idling/appending")
+
+		if cat.IdleConn, err = GetConnection(src, true); err != nil {
+			log.Printf("unable to initiate idle connections: %s", err.Error())
+			return cat, err
+		}
+		log.Print("created source 1 connection for idling")
 	}
-	log.Print("created 1 connection per inbox for idling/updating")
-
 	return cat, nil
 }
 
 // CopyCat represents a process waiting to copy
 type CopyCat struct {
-	//TODO: decide if we really need to hold onto this info
-	SourceInfo InboxInfo
-	DestInfos  []InboxInfo
-
-	SyncConns conns
-	IdleConns conns
+	SyncConns       conns
+	IdleAppendConns conns
+	IdlePurgeConns  conns
+	IdleConn        *imap.Client
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
@@ -58,13 +74,8 @@ func (c *CopyCat) Sync() error {
 // Idle will optionally sync the mailboxes, wait for updates
 // from the imap server and update the destinations appropriately.
 func (c *CopyCat) Idle(runSync bool) (err error) {
-	// setting up a channel for Idle to request purges.
-	// purges will be helpful when we receive a 'expunge' command
-	// or an unexpected 'EXISTS' command to get our inboxes back in sync.
-	// Channel has a buffer because we dont want idle to be blocked while making
-	// a request
-	purgeRequests := make(chan bool, 100)
 
+	purgeRequests := make(chan bool, 100)
 	// kick off sync as a goroutine if we plan on idling.
 	// Messages could come in/be deleted after sync makes its initial
 	// query against the source database. We want Idle to
@@ -78,22 +89,28 @@ func (c *CopyCat) Idle(runSync bool) (err error) {
 		}
 
 		for _ = range purgeRequests {
-			err = SearchAndPurge(c.SyncConns.Source, c.SyncConns.Dest)
+			err = SearchAndPurge(c.IdlePurgeConns.Source, c.IdlePurgeConns.Dest)
 			if err != nil {
 				log.Print("There was an error during the purge: (%s)", err.Error())
 			}
 		}
-	}()
 
-	// setup the conns for Idling
-	srcConn := c.IdleConns.Source[0]
-	var dstConns []*imap.Client
-	for _, conns := range c.IdleConns.Dest {
-		dstConns = append(dstConns, conns[0])
+	}()
+	
+	var appendRequests []chan WorkRequest
+	var storers sync.WaitGroup
+	// setup storers for each destination
+	for _, dst := range c.IdleAppendConns.Dest {
+		storeRequests := make(chan WorkRequest)
+		for _, dstConn := range dst {
+			storers.Add(1)
+			go CheckAndAppendMessages(dstConn, storeRequests, nil, &storers)
+		}
+		appendRequests = append(appendRequests, storeRequests)
 	}
 
 	// idle...
-	err = Idle(srcConn, dstConns, purgeRequests)
+	err = Idle(c.IdleConn, appendRequests, purgeRequests)
 	if err != nil {
 		log.Print("IDLE ERROR: ", err.Error())
 	}
@@ -159,7 +176,7 @@ func FetchMessage(conn *imap.Client, messageUID uint32) (msg MessageData, err er
 	seq, _ := imap.NewSeqSet("")
 	seq.AddNum(messageUID)
 	var cmd *imap.Command
-	cmd, err = imap.Wait(conn.UIDFetch(seq, "INTERNALDATE", "BODY[]"))
+	cmd, err = imap.Wait(conn.UIDFetch(seq, "INTERNALDATE", "BODY[]", "UID", "RFC822.HEADER"))
 	if err != nil {
 		log.Printf("Unable to fetch message (%d): %s", messageUID, err.Error())
 		return
@@ -167,7 +184,7 @@ func FetchMessage(conn *imap.Client, messageUID uint32) (msg MessageData, err er
 
 	if len(cmd.Data) == 0 {
 		log.Printf("Unable to fetch message (%d) from src: NO DATA", messageUID)
-		return msg, errors.New("message not found")
+		return msg, NotFound
 	}
 
 	msgFields := cmd.Data[0].MessageInfo().Attrs
@@ -221,12 +238,12 @@ func GetConnection(info InboxInfo, readOnly bool) (*imap.Client, error) {
 func ResetConnection(conn *imap.Client, readOnly bool) error {
 	// dont check for error because its possible it's already closed.
 	conn.Close(!readOnly)
-	
+
 	_, err := imap.Wait(conn.Select("INBOX", readOnly))
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -270,6 +287,7 @@ type WorkRequest struct {
 	Value  string
 	Header string
 	UID    uint32
+	Msg    MessageData
 }
 
 type conns struct {

@@ -24,24 +24,21 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 	}
 
 	// setup message fetchers to pull from the source/memcache
-	var fetchers sync.WaitGroup
 	fetchRequests := make(chan fetchRequest)
 	for _, srcConn := range src {
-		fetchers.Add(1)
-		go fetchEmails(srcConn, fetchRequests, &fetchers)
+		go fetchEmails(srcConn, fetchRequests)
 	}
-
-	// setup storers for each destination
+	
+	var appendRequests []chan WorkRequest
 	var storers sync.WaitGroup
-	var dstsStoreRequests []chan WorkRequest
+	// setup storers for each destination
 	for _, dst := range dsts {
 		storeRequests := make(chan WorkRequest)
 		for _, dstConn := range dst {
 			storers.Add(1)
-			go checkAndStoreMessages(dstConn, storeRequests, fetchRequests, &storers)
+			go CheckAndAppendMessages(dstConn, storeRequests, fetchRequests, &storers)
 		}
-
-		dstsStoreRequests = append(dstsStoreRequests, storeRequests)
+		appendRequests = append(appendRequests, storeRequests)
 	}
 
 	// build the requests and send them
@@ -57,7 +54,7 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 
 			// create the store request and pass it to each dst's storers
 			storeRequest := WorkRequest{Value: value, Header: header, UID: rsp.MessageInfo().UID}
-			for _, storeRequests := range dstsStoreRequests {
+			for _, storeRequests := range appendRequests {
 				storeRequests <- storeRequest
 			}
 
@@ -71,7 +68,7 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 	}
 
 	// after everything is on the channel, close them...
-	for _, storeRequests := range dstsStoreRequests {
+	for _, storeRequests := range appendRequests {
 		close(storeRequests)
 	}
 	// ... and wait for our workers to finish up.
@@ -79,8 +76,6 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 
 	// once the storers are complete we can close the fetch channel
 	close(fetchRequests)
-	// and then wait for the fetchers to stop
-	fetchers.Wait()
 
 	log.Printf("search and store processes complete")
 	return nil
@@ -89,58 +84,59 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 // checkAndStoreMessages will wait for WorkRequests to come acorss the pipe. When it receives a request, it will search
 // the given destination inbox for the message. If it is not found, this method will attempt to pull the messages data
 // from fetchRequests and then append it to the destination.
-func checkAndStoreMessages(dstConn *imap.Client, storeRequests chan WorkRequest, fetchRequests chan fetchRequest, wg *sync.WaitGroup) {
+func CheckAndAppendMessages(dstConn *imap.Client, storeRequests chan WorkRequest, fetchRequests chan fetchRequest, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	failures := 0
-	for request := range storeRequests {
-	retry:
-		if failures > 5 {
-			log.Printf("storer encountered too many failures. giving up.")
-			return
-		}
+	// noop it every few to keep things alive
+	timeout := time.NewTicker(NoopMinutes * time.Minute)
 
-		// search for in dst
-		cmd, err := imap.Wait(dstConn.UIDSearch([]imap.Field{"HEADER", request.Header, request.Value}))
-		if err != nil {
-			log.Printf("Unable to search for message (%s): %s. Resetting connection.", request.Value, err.Error())
-			// close and select.
-			if err := ResetConnection(dstConn, true); err != nil {
-				log.Printf("Connection reset failed. Quitting: %s", err.Error())
-				return
+	for {
+		select {
+		case request, ok := <-storeRequests:
+			if !ok {
+				break
 			}
-			failures++
-			goto retry
-		}
-
-		results := cmd.Data[0].SearchResults()
-		// if not found, PULL from SRC and STORE in DST
-		if len(results) == 0 {
-
-			// build and send fetch request
-			response := make(chan MessageData)
-			fr := fetchRequest{MessageId: request.Value, UID: request.UID, Response: response}
-			fetchRequests <- fr
-
-			// grab response from fetchers
-			messageData := <-response
-			if len(messageData.Body) == 0 {
-				log.Printf("No data found in message fetch request (%s)", request.Value)
-				goto retry
-			}
-
-			err = AppendMessage(dstConn, messageData)
+			log.Printf("new append request for %s. checking if exists in dest.", request.Value)
+			// search for in dst
+			cmd, err := imap.Wait(dstConn.UIDSearch([]imap.Field{"HEADER", request.Header, request.Value}))
 			if err != nil {
-				log.Printf("Problems appending message to dst: %s", err.Error())
-				if err := ResetConnection(dstConn, true); err != nil {
+				log.Printf("Unable to search for message (%s): %s. Resetting connection.", request.Value, err.Error())
+			}
+
+			results := cmd.Data[0].SearchResults()
+			// if not found, PULL from SRC and STORE in DST
+			if len(results) == 0 {
+				log.Printf("%s not in dest. Attempting to append.", request.Value)
+				// only fetch if we dont have data already
+				if len(request.Msg.Body) == 0 {
+					log.Printf("making a fetch request")
+					// build and send fetch request
+					response := make(chan MessageData)
+					fr := fetchRequest{MessageId: request.Value, UID: request.UID, Response: response}
+					fetchRequests <- fr
+
+					// grab response from fetchers
+					request.Msg = <-response					
+				}
+				if len(request.Msg.Body) == 0 {
+					log.Printf("No data found for from fetch request (%s). giving up", request.Value)
+					continue
+				}
+				
+				log.Printf("appending %s", request.Value)
+				err = AppendMessage(dstConn, request.Msg)
+				if err != nil {
+					log.Printf("Problems appending message to dst: %s. quitting.", err.Error())
 					return
 				}
-				failures++
-				goto retry
+
 			}
 
+		case <-timeout.C:
+			imap.Wait(dstConn.Noop())
 		}
 	}
+
 	log.Print("storer complete!")
 	return
 }
@@ -151,63 +147,67 @@ type fetchRequest struct {
 	Response  chan MessageData
 }
 
-// fetchEmails will sit and wait for fetchRequests from the destination workers. Once the
-// requests channel is closed, this will finish up work and notify the waitgroup it is done.
-func fetchEmails(conn *imap.Client, requests chan fetchRequest, wg *sync.WaitGroup) {
-	defer wg.Done()
+// FetchEmails will sit and wait for fetchRequests from the destination workers.
+func fetchEmails(conn *imap.Client, requests chan fetchRequest) {
 	// connect to memcached
 	cache := memcache.New(MemcacheServer)
 
-	failures := 0
-	for request := range requests {
-	retry:
-		if failures > 5 {
-			log.Printf("storer encountered too many failures. giving up.")
-			return
-		}
-		
-		// check if the message body is in memcached
-		if msgBytes, err := cache.Get(request.MessageId); err == nil {
-			var data MessageData
-			err := deserialize(msgBytes.Value, &data)
-			if err != nil {
-				log.Printf("Problems deserializing memcache value: %s. Pulling message from src", err.Error())
-				data = MessageData{}
+	// noop every few to keep things alive
+	timeout := time.NewTicker(NoopMinutes * time.Minute)
+
+	for {
+		select {
+		case request, ok := <-requests:
+			if !ok {
+				break
+			}
+			// check if the message body is in memcached
+			if msgBytes, err := cache.Get(request.MessageId); err == nil {
+				var data MessageData
+				err := deserialize(msgBytes.Value, &data)
+				if err != nil {
+					log.Printf("Problems deserializing memcache value: %s. Pulling message from src", err.Error())
+					data = MessageData{}
+				}
+
+				// if its there, respond with it
+				if len(data.Body) > 0 {
+					request.Response <- data
+					continue
+				}
 			}
 
-			// if its there, respond with it
-			if len(data.Body) > 0 {
-				request.Response <- data
+			msgData, err := FetchMessage(conn, request.UID)
+			if err != nil {
+				if err == NotFound {
+					log.Printf("No data found for UID: %d", request.UID)
+				} else {
+					log.Printf("Problems fetching message (%s) data: %s. Passing request and quitting.", request.MessageId, err.Error())
+					requests <- request
+					return
+				}
+			}
+			request.Response <- msgData
+
+			// store it in memcached if we had to fetch it
+			// gobify
+			msgGob, err := serialize(msgData)
+			if err != nil {
+				log.Printf("Unable to serialize message (%s): %s", request.MessageId, err.Error())
 				continue
 			}
-		}
 
-		msgData, err := FetchMessage(conn, request.UID)
-		if err != nil {
-			log.Printf("Problems fetching message (%s) data: %s. Resetting connection.", request.MessageId, err.Error())
-			if err := ResetConnection(conn, true); err != nil {
-				log.Printf("Connection reset failed. Quitting: %s", err.Error())
-				return
+			cacheItem := memcache.Item{Key: request.MessageId, Value: msgGob}
+			err = cache.Add(&cacheItem)
+			if err != nil {
+				log.Printf("Unable to add message (%s) to cache: %s", request.MessageId, err.Error())
 			}
-			failures++
-			goto retry
-		}
-		request.Response <- msgData
 
-		// store it in memcached if we had to fetch it
-		// gobify
-		msgGob, err := serialize(msgData)
-		if err != nil {
-			log.Printf("Unable to serialize message (%s): %s", request.MessageId, err.Error())
-			continue
-		}
-
-		cacheItem := memcache.Item{Key: request.MessageId, Value: msgGob}
-		err = cache.Add(&cacheItem)
-		if err != nil {
-			log.Printf("Unable to add message (%s) to cache: %s", request.MessageId, err.Error())
+		case <-timeout.C:
+			imap.Wait(conn.Noop())
 		}
 	}
+
 }
 
 // serialize encodes a value using gob.
