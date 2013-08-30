@@ -89,11 +89,12 @@ func CheckAndAppendMessages(dstConn *imap.Client, storeRequests chan WorkRequest
 
 	// noop it every few to keep things alive
 	timeout := time.NewTicker(NoopMinutes * time.Minute)
-
+	done := false
 	for {
 		select {
 		case request, ok := <-storeRequests:
 			if !ok {
+				done = true
 				break
 			}
 			log.Printf("new append request for %s. checking if exists in dest.", request.Value)
@@ -135,6 +136,10 @@ func CheckAndAppendMessages(dstConn *imap.Client, storeRequests chan WorkRequest
 		case <-timeout.C:
 			imap.Wait(dstConn.Noop())
 		}
+		
+		if done {
+			break
+		}
 	}
 
 	log.Print("storer complete!")
@@ -154,11 +159,12 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest) {
 
 	// noop every few to keep things alive
 	timeout := time.NewTicker(NoopMinutes * time.Minute)
-
+	done := false
 	for {
 		select {
 		case request, ok := <-requests:
 			if !ok {
+				done = true
 				break
 			}
 			// check if the message body is in memcached
@@ -205,6 +211,10 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest) {
 
 		case <-timeout.C:
 			imap.Wait(conn.Noop())
+		}
+		
+		if done {
+			break
 		}
 	}
 

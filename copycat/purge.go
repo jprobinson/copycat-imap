@@ -83,7 +83,7 @@ func purgeDestination(user string, dsts []*imap.Client, checkRequests chan check
 			}
 		}
 	}
-
+	log.Printf("Done passing purge requests for %s", user)
 	close(workRequests)
 	purgers.Wait()
 
@@ -94,11 +94,12 @@ func checkAndPurgeMessages(conn *imap.Client, requests chan WorkRequest, checkRe
 	defer wg.Done()
 	
 	timeout := time.NewTicker(NoopMinutes * time.Minute)
-	
+	done := false
 	for {
 		select {
 		case request, ok := <- requests:
 			if !ok {
+				done = true
 				break
 			}
 			// check and wait for response
@@ -117,8 +118,12 @@ func checkAndPurgeMessages(conn *imap.Client, requests chan WorkRequest, checkRe
 		case <- timeout.C:
 			imap.Wait(conn.Noop())
 		}
+		
+		if done {
+			break
+		}
 	}
-
+	
 	log.Printf("expunging...")
 	// expunge at the end
 	allMsgs, _ := imap.NewSeqSet("")
@@ -139,11 +144,12 @@ func checkMessagesExist(srcConn *imap.Client, checkRequests chan checkExistsRequ
 	cache := memcache.New(MemcacheServer)
 	
 	timeout := time.NewTicker(NoopMinutes * time.Minute)
-	
+	done := false
 	for {
 		select {
 		case request, ok := <- checkRequests:
 			if !ok {
+				done = true
 				break
 			}
 			// check if it exists in src
@@ -168,6 +174,10 @@ func checkMessagesExist(srcConn *imap.Client, checkRequests chan checkExistsRequ
 			}			
 		case <- timeout.C:
 			imap.Wait(srcConn.Noop())
+		}
+		
+		if done {
+			break
 		}
 	}
 
