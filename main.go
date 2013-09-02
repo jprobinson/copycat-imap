@@ -97,6 +97,7 @@ func main() {
 		go utils.ListenForLogSignal(logger)
 	}
 
+start:
 	cat, err := copycat.NewCopyCat(srcInfo, dstInfos, *conns, *sync, *idle)
 	if err != nil {
 		log.Printf("Problems creating new copycat: %s", err.Error())
@@ -105,6 +106,9 @@ func main() {
 	switch {
 	case *idle:
 		cat.Idle(*sync)
+		// if idle ended, something's up. just restart.
+		log.Printf("Idle unexpectedly quit. restarting...")
+		goto start
 	case *sync:
 		cat.Sync()
 	}
