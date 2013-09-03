@@ -4,8 +4,8 @@ import (
 	"crypto/tls"
 	"errors"
 	"log"
-	"time"
 	"sync"
+	"time"
 
 	"code.google.com/p/go-imap/go1/imap"
 )
@@ -96,7 +96,7 @@ func (c *CopyCat) Idle(runSync bool) (err error) {
 		}
 
 	}()
-	
+
 	var appendRequests []chan WorkRequest
 	var storers sync.WaitGroup
 	// setup storers for each destination
@@ -133,6 +133,13 @@ func Sync(src []*imap.Client, dsts map[string][]*imap.Client) (err error) {
 	}
 	log.Print("sync complete")
 	return
+}
+
+func (c *CopyCat) Close() {
+	c.SyncConns.Close()
+	c.IdleAppendConns.Close()
+	c.IdlePurgeConns.Close()
+	c.IdleConn.Logout(-1)
 }
 
 type Config struct {
@@ -293,4 +300,16 @@ type WorkRequest struct {
 type conns struct {
 	Source []*imap.Client
 	Dest   map[string][]*imap.Client
+}
+
+func (c *conns) Close() {
+	for _, conn := range c.Source {
+		conn.Logout(-1)
+	}
+
+	for _, dst := range c.Dest {
+		for _, conn := range dst {
+			conn.Logout(-1)
+		}
+	}
 }

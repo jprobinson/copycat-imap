@@ -107,10 +107,12 @@ start:
 	case *idle:
 		cat.Idle(*sync)
 		// if idle ended, something's up. just restart.
+		cat.Close()
 		log.Printf("Idle unexpectedly quit. restarting...")
 		goto start
 	case *sync:
 		cat.Sync()
+		cat.Close()
 	}
 }
 
