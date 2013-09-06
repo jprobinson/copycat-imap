@@ -100,7 +100,8 @@ func CheckAndAppendMessages(dstConn *imap.Client, storeRequests chan WorkRequest
 			// search for in dst
 			cmd, err := imap.Wait(dstConn.UIDSearch([]imap.Field{"HEADER", request.Header, request.Value}))
 			if err != nil {
-				log.Printf("Unable to search for message (%s): %s. Resetting connection.", request.Value, err.Error())
+				log.Printf("Unable to search for message (%s): %s. skippin!", request.Value, err.Error())
+				continue
 			}
 
 			results := cmd.Data[0].SearchResults()

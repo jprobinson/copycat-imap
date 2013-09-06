@@ -67,13 +67,13 @@ type CopyCat struct {
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
-func (c *CopyCat) Sync() error {
-	return Sync(c.SyncConns.Source, c.SyncConns.Dest)
+func (c *CopyCat) Sync(runPurge bool) error {
+	return Sync(c.SyncConns.Source, c.SyncConns.Dest, runPurge)
 }
 
 // Idle will optionally sync the mailboxes, wait for updates
 // from the imap server and update the destinations appropriately.
-func (c *CopyCat) Idle(runSync bool) (err error) {
+func (c *CopyCat) Idle(runSync bool, runPurge bool) (err error) {
 
 	purgeRequests := make(chan bool, 100)
 	// kick off sync as a goroutine if we plan on idling.
@@ -82,7 +82,7 @@ func (c *CopyCat) Idle(runSync bool) (err error) {
 	// pick up those changes.
 	go func() {
 		if runSync {
-			err = Sync(c.SyncConns.Source, c.SyncConns.Dest)
+			err = Sync(c.SyncConns.Source, c.SyncConns.Dest, runPurge)
 			if err != nil {
 				log.Print("SYNC ERROR: ", err.Error())
 			}
@@ -119,12 +119,17 @@ func (c *CopyCat) Idle(runSync bool) (err error) {
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
-func Sync(src []*imap.Client, dsts map[string][]*imap.Client) (err error) {
+func Sync(src []*imap.Client, dsts map[string][]*imap.Client, runPurge bool) (err error) {
 	log.Print("beginning sync...")
-	err = SearchAndPurge(src, dsts)
-	if err != nil {
-		log.Print("There was an error during the purge. (%s) quitting process.", err.Error())
-		return
+
+	if runPurge {
+		err = SearchAndPurge(src, dsts)
+		if err != nil {
+			log.Print("There was an error during the purge. (%s) quitting process.", err.Error())
+			return
+		}
+	} else {
+		log.Printf("skipping purge")
 	}
 
 	err = SearchAndStore(src, dsts)
@@ -139,7 +144,7 @@ func (c *CopyCat) Close() {
 	c.SyncConns.Close()
 	c.IdleAppendConns.Close()
 	c.IdlePurgeConns.Close()
-	c.IdleConn.Logout(-1)
+	c.IdleConn.Logout(20 * time.Second)
 }
 
 type Config struct {
@@ -304,12 +309,12 @@ type conns struct {
 
 func (c *conns) Close() {
 	for _, conn := range c.Source {
-		conn.Logout(-1)
+		conn.Logout(20 * time.Second)
 	}
 
 	for _, dst := range c.Dest {
 		for _, conn := range dst {
-			conn.Logout(-1)
+			conn.Logout(20 * time.Second)
 		}
 	}
 }

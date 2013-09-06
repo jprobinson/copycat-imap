@@ -29,8 +29,9 @@ var (
 	exampleConfig = flag.Bool("example-config", false, "View an example layout for a json config file meant to hold multiple destination accounts.")
 
 	// single run or idle and wait
-	idle = flag.Bool("idle", false, "Sync the mailboxes and then idle and wait for updates. Creates an additional connection for each inbox.")
-	sync = flag.Bool("sync", true, "Run a sync of the mailboxes. Flag helpful for skipping sync with bandwidth usage is limited.")
+	idle  = flag.Bool("idle", false, "Sync the mailboxes and then idle and wait for updates. Creates an additional connection for each inbox.")
+	sync  = flag.Bool("sync", true, "Run a sync of the mailboxes. Flag helpful for skipping sync with bandwidth usage is limited.")
+	purge = flag.Bool("purge", true, "During the sync this will purge any destination messages that do not exist in the source.")
 
 	// # of IMAP connections per mailbox
 	conns = flag.Int("c", 2, "The number of concurrent IMAP connections for each inbox during Syncing. Large #s may run faster but you may risk reaching connection/bandwidth limits for you email provider.")
@@ -105,13 +106,14 @@ start:
 
 	switch {
 	case *idle:
-		cat.Idle(*sync)
+		cat.Idle(*sync, *purge)
 		// if idle ended, something's up. just restart.
+		log.Printf("Idle unexpectedly quit. attempting to close conns...")
 		cat.Close()
-		log.Printf("Idle unexpectedly quit. restarting...")
+		log.Print("Conns closed. restarting process.")
 		goto start
 	case *sync:
-		cat.Sync()
+		cat.Sync(*purge)
 		cat.Close()
 	}
 }

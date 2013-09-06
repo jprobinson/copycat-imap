@@ -157,7 +157,7 @@ func checkMessagesExist(srcConn *imap.Client, checkRequests chan checkExistsRequ
 			cmd, err := imap.Wait(srcConn.UIDSearch([]imap.Field{"HEADER", "Message-Id", request.MessageId}))
 			if err != nil {
 				log.Printf("Unable to search source: %s", err.Error())
-				request.Response <- false
+				request.Response <- true
 				continue
 			}
 
