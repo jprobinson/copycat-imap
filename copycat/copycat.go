@@ -67,8 +67,8 @@ type CopyCat struct {
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
-func (c *CopyCat) Sync(runPurge bool) error {
-	return Sync(c.SyncConns.Source, c.SyncConns.Dest, runPurge)
+func (c *CopyCat) Sync(runPurge bool, quickSyncCount int) error {
+	return Sync(c.SyncConns.Source, c.SyncConns.Dest, runPurge, quickSyncCount)
 }
 
 // Idle will optionally sync the mailboxes, wait for updates
@@ -82,7 +82,7 @@ func (c *CopyCat) Idle(runSync bool, runPurge bool) (err error) {
 	// pick up those changes.
 	go func() {
 		if runSync {
-			err = Sync(c.SyncConns.Source, c.SyncConns.Dest, runPurge)
+			err = Sync(c.SyncConns.Source, c.SyncConns.Dest, runPurge, 0)
 			if err != nil {
 				log.Print("SYNC ERROR: ", err.Error())
 			}
@@ -119,7 +119,7 @@ func (c *CopyCat) Idle(runSync bool, runPurge bool) (err error) {
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
-func Sync(src []*imap.Client, dsts map[string][]*imap.Client, runPurge bool) (err error) {
+func Sync(src []*imap.Client, dsts map[string][]*imap.Client, runPurge bool, quickSyncCount int) (err error) {
 	log.Print("beginning sync...")
 
 	if runPurge {
@@ -132,7 +132,7 @@ func Sync(src []*imap.Client, dsts map[string][]*imap.Client, runPurge bool) (er
 		log.Printf("skipping purge")
 	}
 
-	err = SearchAndStore(src, dsts)
+	err = SearchAndStore(src, dsts, quickSyncCount)
 	if err != nil {
 		log.Print("There was an error during the store. (%s) quitting process.", err.Error())
 	}
@@ -144,7 +144,9 @@ func (c *CopyCat) Close() {
 	c.SyncConns.Close()
 	c.IdleAppendConns.Close()
 	c.IdlePurgeConns.Close()
-	c.IdleConn.Logout(20 * time.Second)
+	if c.IdleConn != nil {
+		c.IdleConn.Logout(20 * time.Second)
+	}
 }
 
 type Config struct {

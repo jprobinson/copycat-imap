@@ -15,7 +15,7 @@ import (
 // SearchAndStore will check check if each message in the source inbox
 // exists in the destinations. If it doesn't exist in a destination, the message info will
 // be pulled and stored into the destination.
-func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err error) {
+func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client, quickSyncCount int) (err error) {
 	var cmd *imap.Command
 	cmd, err = GetAllMessages(src[0])
 	if err != nil {
@@ -28,7 +28,7 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 	for _, srcConn := range src {
 		go fetchEmails(srcConn, fetchRequests)
 	}
-	
+
 	var appendRequests []chan WorkRequest
 	var storers sync.WaitGroup
 	// setup storers for each destination
@@ -42,11 +42,17 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client) (err err
 	}
 
 	// build the requests and send them
-	log.Printf("Beginning store processing for %d messages from the source inbox", len(cmd.Data))
+	log.Printf("store processing for %d messages from the source inbox", len(cmd.Data))
 	var rsp *imap.Response
 	var indx int
 	startTime := time.Now()
-	for indx, rsp = range cmd.Data {
+	syncStart := 0
+	// consider quick sync
+	if quickSyncCount != 0 {
+		syncStart = len(cmd.Data) - quickSyncCount
+		log.Printf("found quick sync count. will only sync messages %d through %d", syncStart, len(cmd.Data))
+	}
+	for indx, rsp = range cmd.Data[syncStart:] {
 		header := imap.AsBytes(rsp.MessageInfo().Attrs["RFC822.HEADER"])
 		if msg, _ := mail.ReadMessage(bytes.NewReader(header)); msg != nil {
 			header := "Message-Id"
@@ -115,13 +121,13 @@ func CheckAndAppendMessages(dstConn *imap.Client, storeRequests chan WorkRequest
 					fetchRequests <- fr
 
 					// grab response from fetchers
-					request.Msg = <-response					
+					request.Msg = <-response
 				}
 				if len(request.Msg.Body) == 0 {
 					log.Printf("No data found for from fetch request (%s). giving up", request.Value)
 					continue
 				}
-				
+
 				err = AppendMessage(dstConn, request.Msg)
 				if err != nil {
 					log.Printf("Problems appending message to dst: %s. quitting.", err.Error())
@@ -133,7 +139,7 @@ func CheckAndAppendMessages(dstConn *imap.Client, storeRequests chan WorkRequest
 		case <-timeout.C:
 			imap.Wait(dstConn.Noop())
 		}
-		
+
 		if done {
 			break
 		}
@@ -209,7 +215,7 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest) {
 		case <-timeout.C:
 			imap.Wait(conn.Noop())
 		}
-		
+
 		if done {
 			break
 		}
