@@ -76,6 +76,6 @@ To limit precious IMAP bandwidth usage (even GMail only allows ~2.8GB transfers 
 This tool makes use of a couple external libraries that you'll need to 'go get' if you plan on using it as a library:
 
 * [Go-IMAP](https://code.google.com/p/go-imap/)
-* [goleveldb](https://github.com/syndtr/goleveldb/leveldb)
+* [goleveldb](https://github.com/syndtr/goleveldb)
     
     
