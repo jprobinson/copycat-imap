@@ -67,13 +67,13 @@ type CopyCat struct {
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
-func (c *CopyCat) Sync(runPurge bool, quickSyncCount int) error {
-	return Sync(c.SyncConns.Source, c.SyncConns.Dest, runPurge, quickSyncCount)
+func (c *CopyCat) Sync(runPurge bool, dbFile string, quickSyncCount int) error {
+	return Sync(c.SyncConns.Source, c.SyncConns.Dest, runPurge, dbFile, quickSyncCount)
 }
 
 // Idle will optionally sync the mailboxes, wait for updates
 // from the imap server and update the destinations appropriately.
-func (c *CopyCat) Idle(runSync bool, runPurge bool) (err error) {
+func (c *CopyCat) Idle(runSync bool, runPurge bool, dbFile string) (err error) {
 
 	purgeRequests := make(chan bool, 100)
 	// kick off sync as a goroutine if we plan on idling.
@@ -82,7 +82,7 @@ func (c *CopyCat) Idle(runSync bool, runPurge bool) (err error) {
 	// pick up those changes.
 	go func() {
 		if runSync {
-			err = Sync(c.SyncConns.Source, c.SyncConns.Dest, runPurge, 0)
+			err = Sync(c.SyncConns.Source, c.SyncConns.Dest, runPurge, dbFile, 0)
 			if err != nil {
 				log.Print("SYNC ERROR: ", err.Error())
 			}
@@ -119,7 +119,7 @@ func (c *CopyCat) Idle(runSync bool, runPurge bool) (err error) {
 }
 
 // Sync will make sure that the dst inbox looks exactly like the src.
-func Sync(src []*imap.Client, dsts map[string][]*imap.Client, runPurge bool, quickSyncCount int) (err error) {
+func Sync(src []*imap.Client, dsts map[string][]*imap.Client, runPurge bool, dbFile string, quickSyncCount int) (err error) {
 	log.Print("beginning sync...")
 
 	if runPurge {
@@ -132,7 +132,7 @@ func Sync(src []*imap.Client, dsts map[string][]*imap.Client, runPurge bool, qui
 		log.Printf("skipping purge")
 	}
 
-	err = SearchAndStore(src, dsts, quickSyncCount)
+	err = SearchAndStore(src, dsts, dbFile, quickSyncCount)
 	if err != nil {
 		log.Print("There was an error during the store. (%s) quitting process.", err.Error())
 	}

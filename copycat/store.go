@@ -2,20 +2,18 @@ package copycat
 
 import (
 	"bytes"
-	"encoding/gob"
 	"log"
 	"net/mail"
 	"sync"
 	"time"
 
 	"code.google.com/p/go-imap/go1/imap"
-	"github.com/bradfitz/gomemcache/memcache"
 )
 
 // SearchAndStore will check check if each message in the source inbox
 // exists in the destinations. If it doesn't exist in a destination, the message info will
 // be pulled and stored into the destination.
-func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client, quickSyncCount int) (err error) {
+func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client, dbFile string, quickSyncCount int) (err error) {
 	var cmd *imap.Command
 	cmd, err = GetAllMessages(src[0])
 	if err != nil {
@@ -23,10 +21,18 @@ func SearchAndStore(src []*imap.Client, dsts map[string][]*imap.Client, quickSyn
 		return
 	}
 
+	// connect to cache
+	cache, err := NewCache(dbFile)
+	if err != nil {
+		log.Printf("problems initiating cache - %s", err.Error())
+		return
+	}
+	defer cache.Close()
+
 	// setup message fetchers to pull from the source/memcache
 	fetchRequests := make(chan fetchRequest)
 	for _, srcConn := range src {
-		go fetchEmails(srcConn, fetchRequests)
+		go fetchEmails(srcConn, fetchRequests, cache)
 	}
 
 	var appendRequests []chan WorkRequest
@@ -156,9 +162,7 @@ type fetchRequest struct {
 }
 
 // FetchEmails will sit and wait for fetchRequests from the destination workers.
-func fetchEmails(conn *imap.Client, requests chan fetchRequest) {
-	// connect to memcached
-	cache := memcache.New(MemcacheServer)
+func fetchEmails(conn *imap.Client, requests chan fetchRequest, cache *Cache) {
 
 	// noop every few to keep things alive
 	timeout := time.NewTicker(NoopMinutes * time.Minute)
@@ -170,20 +174,21 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest) {
 				done = true
 				break
 			}
-			// check if the message body is in memcached
-			if msgBytes, err := cache.Get(request.MessageId); err == nil {
-				var data MessageData
-				err := deserialize(msgBytes.Value, &data)
-				if err != nil {
-					log.Printf("Problems deserializing memcache value: %s. Pulling message from src", err.Error())
-					data = MessageData{}
+			found := true
+			// check if the message body is in cache
+			data, err := cache.Get(request.MessageId)
+			if err != nil {
+				found = false
+				if err != ErrNotFound {
+					log.Printf("problems pulling message data from cache: %s. Pulling message from src...", err.Error())
 				}
+				data = MessageData{}
+			}
 
-				// if its there, respond with it
-				if len(data.Body) > 0 {
-					request.Response <- data
-					continue
-				}
+			if found {
+				log.Print("cache success!")
+				request.Response <- data
+				continue
 			}
 
 			msgData, err := FetchMessage(conn, request.UID)
@@ -198,16 +203,7 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest) {
 			}
 			request.Response <- msgData
 
-			// store it in memcached if we had to fetch it
-			// gobify
-			msgGob, err := serialize(msgData)
-			if err != nil {
-				log.Printf("Unable to serialize message (%s): %s", request.MessageId, err.Error())
-				continue
-			}
-
-			cacheItem := memcache.Item{Key: request.MessageId, Value: msgGob}
-			err = cache.Add(&cacheItem)
+			err = cache.Put(request.MessageId, msgData)
 			if err != nil {
 				log.Printf("Unable to add message (%s) to cache: %s", request.MessageId, err.Error())
 			}
@@ -221,26 +217,4 @@ func fetchEmails(conn *imap.Client, requests chan fetchRequest) {
 		}
 	}
 
-}
-
-// serialize encodes a value using gob.
-func serialize(src interface{}) ([]byte, error) {
-	buf := new(bytes.Buffer)
-	enc := gob.NewEncoder(buf)
-	err := enc.Encode(src)
-	if err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-// deserialize decodes a value using gob.
-func deserialize(src []byte, dst interface{}) error {
-	buf := bytes.NewBuffer(src)
-	dec := gob.NewDecoder(buf)
-	err := dec.Decode(dst)
-	if err != nil {
-		return err
-	}
-	return nil
 }

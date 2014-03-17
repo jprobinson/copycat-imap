@@ -40,6 +40,7 @@ var (
 
 	// accept log file too
 	logFile = flag.String("log", "", "Location to write logs to. stderr by default. If set, a HUP signal will handle logrotate.")
+	dbFile  = flag.String("db", "/var/copycat/messages", "path for message storage")
 )
 
 func main() {
@@ -106,18 +107,20 @@ start:
 		log.Printf("Problems creating new copycat: %s", err.Error())
 	}
 
+	if !*quicksync {
+		*quickcount = 0
+	}
+
 	switch {
 	case *idle:
-		cat.Idle(*sync, *purge)
+		cat.Idle(*sync, *purge, *dbFile)
 		// if idle ended, something's up. just restart.
 		log.Printf("Idle unexpectedly quit. attempting to close conns...")
 		cat.Close()
 		log.Print("Conns closed. restarting process.")
 		goto start
-	case *quicksync:
-		cat.Sync(*purge, *quickcount)
 	case *sync:
-		cat.Sync(*purge, 0)
+		cat.Sync(*purge, *dbFile, *quickcount)
 		cat.Close()
 	}
 }
