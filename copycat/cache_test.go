@@ -2,13 +2,18 @@ package copycat
 
 import (
 	"log"
+	"os"
 	"testing"
 	"time"
 )
 
-func TestCache(t *testing.T) {
+const cacheTestLoc = "/tmp/cachetest"
 
-	cache, err := NewCache("/tmp/cachetest")
+func TestCache(t *testing.T) {
+	// make sure we clean up after ourselves
+	defer cleanUp()
+
+	cache, err := NewCache(cacheTestLoc)
 	if err != nil {
 		t.Errorf("unable to create cache - %s", err.Error())
 		return
@@ -37,5 +42,11 @@ func TestCache(t *testing.T) {
 	}
 
 	log.Printf("cache result - %v - expected %v", newData, data)
+}
 
+func cleanUp() {
+	err := os.RemoveAll(cacheTestLoc)
+	if err != nil {
+		log.Print(err.Error())
+	}
 }
